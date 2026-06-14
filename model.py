@@ -7,6 +7,7 @@ from tensorflow.keras import models, layers
 import numpy as np
 from scipy.spatial import KDTree
 import torch
+from torch.utils.data import Dataset, DataLoader, BatchSampler, SequentialSampler
 
 # A machine learning model which takes test data files containing only population and location data 
 # and produces predictions for the vote proportions in each block
@@ -33,6 +34,24 @@ def normalize_training_list(trainingListData: list[pd.DataFrame], populationCol:
 #Use the normalizer from training to scale the population column of test data.
 def normalize_testing(testData: pd.DataFrame, populationCol: str):
     normalizer.transform(testData[[populationCol]])
+
+#Maps FCN output tensor back to original county IDs
+def extract_predictions(fcn_output, county_mappings):
+    results = {}
+
+    with torch.no_grad():
+        for mapping in county_mappings:
+            id = mapping['id']
+            x = mapping['grid_x']
+            y = mapping['grid_y']
+
+            pixel_prediction = fcn_output[:, y, x].cpu().numpy()
+
+            results[id] = pixel_prediction
+
+    #dictionary mapping {county ID: prediction vector[2]} <- D% and R%
+    return results
+
 
 #Create a new model.
 def create_model():
@@ -131,12 +150,12 @@ def create_fcn(classes = 2):
     #leave this kernel initializer default for softmax (glorot_uniform)
     outputLayer = layers.Conv2D(classes, kernel_size=(1,1), activation='softmax', padding='same')(dec3)
     model = models.Model(inputs=[inputLayer], outputs=[outputLayer])
-
     model.summary()
+    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['acc'])
 
 #Convert latitude and longitude center point to 2D grid
 def convert_location(data, buffer=1.05):
-    #Assuming data is of format ID LON LAT POP ...
+    #Assuming data is of format ID LON LAT POP VOTES R% D%
     print("Converting counties to grid...")
         #get max and min lat and long values to convert to grid
 
@@ -168,6 +187,8 @@ def convert_location(data, buffer=1.05):
 
     #Channel 0: population. Channel 1: presence/absence of a county
     grid = np.zeros((2, grid_height, grid_width), dtype=np.float32)
+    labels_grid = np.zeros(2, grid_height, grid_width, dtype=np.float32)
+
     for row in data:
         # Map to [0, width-1] and [0, height-1]
         x = int(np.round(((row[1] - lon_min) / (lon_max - lon_min)) * (grid_width - 1)))
@@ -179,6 +200,10 @@ def convert_location(data, buffer=1.05):
         #Place population, presence at point in grid
         grid[0, invert_y, x] += row[3]
         grid[1, invert_y, x] = 1.0
+
+        #place R%, D% at point 
+        labels_grid[0, invert_y, x] = row[5]
+        labels_grid[0, invert_y, x] = row[6]
 
         #For retrieving counties by ID from FCN output
         county_mappings.append({
@@ -194,28 +219,202 @@ def convert_location(data, buffer=1.05):
     "lat_range": (lat_min, lat_max)
     }
     
-    return grid, county_mappings, metadata
+    return grid, county_mappings, metadata, labels_grid
 
-#Maps FCN output tensor back to original county IDs
-def extract_predictions(fcn_output, county_mappings):
-    results = {}
+#divide grids into groups of 3 for batching
+def batch_grids(grids):
+    print("Dividing data into batches...")
+    sizes = np.array([x.size for x in grids])
+    sort_order = np.argsort(sizes)
+    sorted_grids = grids[sort_order]
 
-    with torch.no_grad():
-        for mapping in county_mappings:
-            id = mapping['id']
-            x = mapping['grid_x']
-            y = mapping['grid_y']
+    batches = []
 
-            pixel_prediction = fcn_output[:, y, x].cpu().numpy()
+    for i in sorted_grids:
+        batch.append()
 
-            results[id] = pixel_prediction
+    return sorted_grids
 
-    #dictionary mapping {county ID: prediction vector[2]} <- D% and R%
-    return results
 
+#pad grids in this batch to the largest size and update mappings for batch index
+def pad_batch(grids, mappings):
+    #pad grids to the largest size grid in this batch
+    max_h = max(g.shape[1] for g in grids)
+    max_w = max(g.shape[2] for g in grids)
+
+    padded_grids = []
+    padded_mappings = []
+
+    #pad the right and bottom with 0s
+    for batch_id, (grid, mapping) in enumerate(zip(grids, mappings)):
+        c, h, w = grid.shape
+        pad_h = max_h - h
+        pad_w = max_w - w
+
+        padded_grid = torch.nn.functional.pad(grid, (0, pad_w, 0, pad_h), value=0)
+        padded_grids.append(padded_grid)
+
+        for m in mapping:
+            padded_mappings.append({
+                'id': m['id'],
+                'b_id': batch_id,
+                'x': m['x'],
+                'y': m['y']
+            })
+
+    return torch.stack(padded_grids), padded_mappings
+
+class CountyDataset(Dataset):
+    def __init__(self, data_list, training: bool):
+        #data_list: a 3d ndarr.
+        #each 2d ndarr is a group of counties of form of format 
+        #ID LON LAT POP VOTES R% D% (training = True)
+        #or 
+        #ID LON LAT POP (testing / training = False)
+        self.data = data_list
+        self.training = training
+        self.grid_sizes = []
+    
+    def __len__(self):
+        return len(self.data)
+    
+    #get transformed data and labels
+    def __getitem__(self, id):
+        #idx = index of list of data (a 2d ndarr)
+        item = self.data[id]
+
+        #Turn training data into a grid
+        data_grid, county_mappings, metadata = self.rasterize_data(item)
+
+        #Make matching training label grid
+        h, w = metadata["grid_shape"]
+        labels_grid = np.zeros((2, h, w), dtype=np.float32)
+
+        for i, mapping in enumerate(county_mappings):
+            x = mapping["grid_x"]
+            y = mapping["grid_y"]
+
+            labels_grid[0, y, x] = item[i][5]
+            labels_grid[1, y, x] = item[i][6]
+
+        input_tensor = torch.from_numpy(data_grid)
+        target_tensor = torch.from_numpy(labels_grid)
+
+        return input_tensor, target_tensor, county_mappings
+
+    #Use latitude and longitude to convert list of points to a 2D grid
+    def rasterize_data(data, buffer=1.05):
+        print("Converting counties to grid...")
+
+        #Use density of counties to determine grid size
+        coords = data[:, [1,2]]
+        nn_tree = KDTree(coords)
+        distances, _ = nn_tree.query(coords, k=2)
+        min_distance = np.min(distances[:, 1])
+        pixel_size = min_distance * 0.5
+
+        lon_min = data[:, 1].min()
+        lon_max = data[:, 1].max()
+        lat_min = data[:, 2].min()
+        lat_max = data[:, 2].max()
+
+        grid_width = int(np.ceil((lon_max - lon_min) / pixel_size * buffer))
+        grid_height = int(np.ceil((lat_max - lat_min) / pixel_size * buffer))
+
+        #Reduce grid size if too large for memory
+        GRID_MAX = 2048
+        if grid_width > GRID_MAX or grid_height > GRID_MAX:
+            print(f"Grid size {grid_width} x {grid_height} being reduced for safety: {GRID_MAX} x {GRID_MAX}. May cause collisions")
+            scale = GRID_MAX / max(grid_width, grid_height)
+            grid_width = int(grid_width * scale)
+            grid_height = int(grid_height * scale)
+            pixel_size = min_distance * 0.5
+
+        county_mappings = []
+
+        #Channel 0: population. Channel 1: presence/absence of a county
+        grid = np.zeros((2, grid_height, grid_width), dtype=np.float32)
+
+        for row in data:
+            # Map to [0, width-1] and [0, height-1]
+            x = int(np.round(((row[1] - lon_min) / (lon_max - lon_min)) * (grid_width - 1)))
+            y = int(np.round(((row[2] - lat_min) / (lat_max - lat_min)) * (grid_height - 1)))
+
+            #Make north at top of grid
+            invert_y = (grid_height - 1) - y
+
+            #Place population, presence at point in grid
+            grid[0, invert_y, x] += row[3]
+            grid[1, invert_y, x] = 1.0
+
+            #For retrieving counties by ID from FCN output
+            county_mappings.append({
+                'c_id': data[0],
+                'grid_x': x,
+                'grid_y': invert_y
+            })
+
+        metadata = {
+        "grid_shape": (grid_height, grid_width),
+        "pixel_size": pixel_size,
+        "lon_range": (lon_min, lon_max),
+        "lat_range": (lat_min, lat_max)
+        }
+        
+        return grid, county_mappings, metadata
+
+class SizeBasedBatchSampler(BatchSampler):
+    def __init__(self, sampler, batch_size, drop_last, grid_sizes):
+        super().__init(sampler, batch_size, drop_last)
+        self.grid_sizes = np.array(grid_sizes)
+
+    #group similarly sized grids into batches of given size
+    def __iter__(self):
+        sorted_indices = np.argsort(self.grid_sizes)
+        batch = []
+        for id in sorted_indices:
+            batch.append(id)
+            if len(batch) == self.batch_size:
+                yield batch
+                batch = []
+
+        if len(batch) > 0 and not self.drop_last:
+            yield batch
+
+    #pad grids in given batch to the largest size and update mappings for batch index
+    def pad_batch(batch):
+        data_grids = [item[0] for item in batch]
+        label_grids = [item[1] for item in batch]
+        mappings = [item[2] for item in batch]
+
+        #pad grids to the largest size grid in this batch
+        max_h = max(g.shape[1] for g in data_grids)
+        max_w = max(g.shape[2] for g in data_grids)
+
+        padded_grids = []
+        padded_labels = []
+        padded_mappings = []
+
+        #pad the right and bottom with 0s
+        for batch_id, (grid, label, mapping) in enumerate(zip(data_grids, label_grids, mappings)):
+            pad_h = max_h - grid.shape[1]
+            pad_w = max_w - grid.shape[2]
+
+            padded_grids.append(torch.nn.functional.pad(grid, (0, pad_w, 0, pad_h), value=0))
+            padded_labels.append(torch.nn.functional.pad(label, (0, pad_w, 0, pad_h), value=0))
+
+            for m in mapping:
+                padded_mappings.append({
+                    'id': m['id'],
+                    'batch_id': batch_id,
+                    'x': m['x'],
+                    'y': m['y']
+                })
+
+        return torch.stack(padded_grids), torch.stack(padded_labels), padded_mappings
 
 #Load training data and train a new model.
-def train_model():
+def train_model(model):
     global training_data, training_labels
     folder = input("Enter the location of the folder containing training data.\n")
     training_location = os.path.join(folder, "*.csv")
@@ -239,7 +438,7 @@ def train_model():
         #separate the training data from the labels
         #data = pd.read_csv(file, nrows=50, header=None, names=training_headers, usecols=data_headers)
         data = pd.read_csv(file, nrows=100, header=None, usecols=range(4)).to_numpy()
-        #change these cols for testing files
+        #change these cols for testing files. add column 4 if predicting # votes
         labels = pd.read_csv(file, nrows=100, header=None, usecols=[5, 6])
         #print(data.head())
         # print("\n")
@@ -265,13 +464,40 @@ def train_model():
 
     print(f"{normalizer.mean_}, {normalizer.scale_}")
     
-    training_grid, county_mappings, metadata = zip(*[convert_location(training_data[i]) for i in training_data])
+    dataset = CountyDataset(training_data, True)
 
-    training_grid, county_mappings, metadata = list(training_grid), list(county_mappings), list(metadata)
+    base_sampler = SequentialSampler(dataset)
+    custom_batch_sampler = SizeBasedBatchSampler(
+        base_sampler,
+        batch_size=3,
+        drop_last=False,
+        grid_sizes=dataset.grid_sizes
+    )
+
+    dataloader = DataLoader(
+        dataset, batch_sampler = custom_batch_sampler,
+        collate_fn = pad_batch
+    )
+
+    for padded_grids, mappings in dataloader:
+        print(f"Batch tensor shape: {padded_grids.shape}")
+
+
+    #training_grid, county_mappings, metadata, labels_grid  = zip(*[convert_location(training_data[i]) for i in training_data])
+
+    #training_grid, county_mappings, metadata = list(training_grid), list(county_mappings), list(metadata)
+
+    #group maps in batches for training or pad them all to the largest size
+    print("Batching data...")
+    #sort by size
+    #divide into size-3 batches
+    #pad batches to same size
+
+    #how to format labels???
 
     print("Training the model...")
 
-
+    #model.fit(training_grid, training_labels,)
     
 
 
@@ -287,8 +513,8 @@ while keep_running:
     train = input("\nWould you like to train a new model? [Y/N]\n")
 
     if train.upper() == 'Y':
-        create_fcn()
-        train_model()
+        model = create_fcn()
+        train_model(model)
 
 
         #print(training_data[0][:5])
