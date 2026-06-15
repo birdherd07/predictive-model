@@ -2,6 +2,7 @@ import os
 import glob
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
+from sklearn.utils.validation import check_is_fitted
 #from sklearn.compose import ColumnTransformer
 import keras
 from tensorflow.keras import models, layers
@@ -10,11 +11,10 @@ import numpy as np
 from scipy.spatial import cKDTree as KDTree
 import torch
 from torch.utils.data import Dataset, DataLoader, BatchSampler, SequentialSampler
+import joblib
 
 # A machine learning model which takes test data files containing only population and location data 
 # and produces predictions for the vote proportions in each block
-#the input: an arbitrary set of blocks (any state) in test format - population and location and total votes
-#output: predictions for vote proportions in each block. blocks around each one are relevant.
 
 #Use the normalizer from training to scale the population column of test data.
 def normalize_testing(testData: pd.DataFrame, populationCol: str):
@@ -37,39 +37,6 @@ def extract_predictions(fcn_output, county_mappings):
     #dictionary mapping {county ID: prediction vector[2]} <- D% and R%
     return results
 
-
-#Create a new model.
-def create_model():
-    print("Creating the model...")
-    global model
-    model = models.Sequential(name="jerry_mandarin")
-    #variable size input
-    model.add(layers.Input(shape=(None, None, 3)))
-    #larger kernel for high level structures in first layer only
-    model.add(layers.Conv2D(filters=32, kernel_size=(7,7), activation='relu'))
-    #double filters each time layer deepens
-    model.add(layers.Conv2D(filters=64, kernel_size=(3,3), activation='relu'))
-    model.add(layers.MaxPooling2D(pooling_size=(2,2)))
-    #in place of flattening due to unknown input size
-    model.add(layers.GlobalAveragePooling2D())
-    model.add(layers.Dense(32, activation='relu'))
-    model.add(layers.Dropout(0.15))
-    #maybe replace this with actual classifier names
-    model.add(layers.Dense(2, activation='softmax'))
-    #if labels are 1-hot encoded ex 1.0, 0.0 then use categorical_crossentropy, else sparse for integer labels ex 0, 1
-    model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
-
-normalizer = StandardScaler()
-training_data = []
-#training_labels = []
-model = None
-
-#Standardize population column of training data using z-score normalization (all data in single ndarray)
-def normalize_training_np(trainingData: np.ndarray, populationCol: int, normalizer: StandardScaler):
-    #transformer = ColumnTransformer(transformers = [('scaler', normalizer, [populationCol])], remainder='passthrough')
-    
-    trainingData[:, [populationCol]] = normalizer.fit_transform(trainingData[:, [populationCol]])
-    #print(f"{normalizer.mean_}, {normalizer.scale_}")
 
 #Standardize population column of training data using z-score normalization (collection of state 2d ndarrays)
 def normalize_training_list_np(trainingListData, populationCol: int, normalizer: StandardScaler):
@@ -103,11 +70,40 @@ def test_model():
     else:
         print(f"Found {len(testing_files)} testing files.\n")
 
+    ###fix this
     testing_headers = ["ID", "LON", "LAT", "POP", "VOTES"]
     for file in testing_files:
         df = pd.read_csv(file, names=testing_headers)
         print(df.head())
-    
+
+    if not model:
+        model_loc = input("Enter the location of the model file.\n")
+        try:
+            model = models.load_model(model_loc)
+        except:
+            print(f"No model found at a {model_loc}.")
+            return
+        
+    try:
+        check_is_fitted(normalizer)
+    except:
+        scaler_name = input("Enter the name of the scaler bin file.\n")
+        try:
+            normalizer = joblib.load(scaler_name)
+        except:
+            print("No scaler file found in current directory.")
+            return
+        
+    #normalize testing
+
+    #rasterize testing
+
+    #run model
+
+    #extract predictions
+
+
+
 
 #Create a fully convolutional model.
 def create_fcn(input_channels=2, classes=2):
@@ -128,9 +124,9 @@ def create_fcn(input_channels=2, classes=2):
     enc3 = layers.MaxPooling2D(pool_size=(2,2))(enc3)
 
     #decoder: blocks of transpose layers
-    dec1 = layers.Conv2DTranspose(filters=64, kernel_size=(3,3), strides=(2,2), activation='relu', padding='same')(enc3)
-    dec2 = layers.Conv2DTranspose(filters=32, kernel_size=(3,3), strides=(2,2), activation='relu', padding='same')(dec1)
-    dec3 = layers.Conv2DTranspose(filters=16, kernel_size=(3,3), strides=(2,2), activation='relu', padding='same')(dec2)
+    dec1 = layers.Conv2DTranspose(filters=64, kernel_size=(3,3), strides=(2,2), activation='relu', padding='same', data_format='channels_first')(enc3)
+    dec2 = layers.Conv2DTranspose(filters=32, kernel_size=(3,3), strides=(2,2), activation='relu', padding='same', data_format='channels_first')(dec1)
+    dec3 = layers.Conv2DTranspose(filters=16, kernel_size=(3,3), strides=(2,2), activation='relu', padding='same', data_format='channels_first')(dec2)
     
     #output layer: 1, 1 convolution layer with the 2 output classes
     #leave this kernel initializer default for softmax (glorot_uniform)
@@ -138,74 +134,6 @@ def create_fcn(input_channels=2, classes=2):
     model = models.Model(inputs=[inputLayer], outputs=[outputLayer])
     model.summary()
     #model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['acc'])
-
-#Convert latitude and longitude center point to 2D grid
-def convert_location(data, buffer=1.05):
-    #Assuming data is of format ID LON LAT POP VOTES R% D%
-    print("Converting counties to grid...")
-        #get max and min lat and long values to convert to grid
-
-    #Use density of counties to determine grid size
-    coords = data[:, [1,2]]
-    nn_tree = KDTree(coords)
-    distances, _ = nn_tree.query(coords, k=2)
-    min_distance = np.min(distances[:, 1])
-    pixel_size = min_distance * 0.5
-
-    lon_min = data[:, 1].min()
-    lon_max = data[:, 1].max()
-    lat_min = data[:, 2].min()
-    lat_max = data[:, 2].max()
-
-    grid_width = int(np.ceil((lon_max - lon_min) / pixel_size * buffer))
-    grid_height = int(np.ceil((lat_max - lat_min) / pixel_size * buffer))
-
-    #Reduce grid size if too large for memory
-    GRID_MAX = 2048
-    if grid_width > GRID_MAX or grid_height > GRID_MAX:
-        print(f"Grid size {grid_width} x {grid_height} being reduced for safety: {GRID_MAX} x {GRID_MAX}. May cause collisions")
-        scale = GRID_MAX / max(grid_width, grid_height)
-        grid_width = int(grid_width * scale)
-        grid_height = int(grid_height * scale)
-        pixel_size = min_distance * 0.5
-
-    county_mappings = []
-
-    #Channel 0: population. Channel 1: presence/absence of a county
-    grid = np.zeros((2, grid_height, grid_width), dtype=np.float32)
-    labels_grid = np.zeros(2, grid_height, grid_width, dtype=np.float32)
-
-    for row in data:
-        # Map to [0, width-1] and [0, height-1]
-        x = int(np.round(((row[1] - lon_min) / (lon_max - lon_min)) * (grid_width - 1)))
-        y = int(np.round(((row[2] - lat_min) / (lat_max - lat_min)) * (grid_height - 1)))
-
-        #Make north at top of grid
-        invert_y = (grid_height - 1) - y
-
-        #Place population, presence at point in grid
-        grid[0, invert_y, x] += row[3]
-        grid[1, invert_y, x] = 1.0
-
-        #place R%, D% at point 
-        labels_grid[0, invert_y, x] = row[5]
-        labels_grid[0, invert_y, x] = row[6]
-
-        #For retrieving counties by ID from FCN output
-        county_mappings.append({
-            'c_id': data[0],
-            'grid_x': x,
-            'grid_y': invert_y
-        })
-
-    metadata = {
-    "grid_shape": (grid_height, grid_width),
-    "pixel_size": pixel_size,
-    "lon_range": (lon_min, lon_max),
-    "lat_range": (lat_min, lat_max)
-    }
-    
-    return grid, county_mappings, metadata, labels_grid
 
 #divide grids into groups of 3 for batching
 def batch_grids(grids):
@@ -251,7 +179,7 @@ def pad_batch_old(grids, mappings):
     return torch.stack(padded_grids), padded_mappings
 
 #---------------------------------------------------------------------------------------------------------------
-
+#Custom dataset class that transforms list data into 2d rasters for FCN
 class CountyDataset(Dataset):
     def __init__(self, data_list, training: bool):
         #data_list: a 3d ndarr.
@@ -259,12 +187,18 @@ class CountyDataset(Dataset):
         #ID LON LAT POP VOTES R% D% (training = True)
         #or 
         #ID LON LAT POP (testing / training = False)
+        #todo: implement testing version
+
         self.data = data_list
         self.training = training
         self.grid_sizes = []
+        self.grid_info = []
         for item in self.data:
-            h, w = self.grid_size(item)
-            self.grid_sizes.append(h*w)
+            info = self.grid_size(item)
+            #h*w used by the sampler for batching
+            self.grid_sizes.append(info[0] * info[1])
+            #grid dimensions used by the rasterizer
+            self.grid_info.append(info)
     
     def __len__(self):
         return self.data.shape[0]
@@ -275,7 +209,7 @@ class CountyDataset(Dataset):
         item = self.data[id]
 
         #Turn training data into a grid
-        data_grid, county_mappings, metadata = self.rasterize_data(item)
+        data_grid, county_mappings, metadata = self.rasterize_data(item, id)
 
         #Make matching training label grid
         h, w = metadata["grid_shape"]
@@ -293,7 +227,6 @@ class CountyDataset(Dataset):
 
         return input_tensor, target_tensor, county_mappings
 
-    #todo: duplicated code
     def grid_size(self, rawdata, buffer=1.05):
         #Use density of counties to determine grid size
         print(f"grid_size {type(rawdata)}")
@@ -314,42 +247,19 @@ class CountyDataset(Dataset):
         #Reduce grid size if too large for memory
         GRID_MAX = 2048
         if grid_width > GRID_MAX or grid_height > GRID_MAX:
-            #print(f"Grid size {grid_width} x {grid_height} being reduced for safety: {GRID_MAX} x {GRID_MAX}. May cause collisions")
+            print(f"Grid size {grid_width} x {grid_height} being reduced for safety: {GRID_MAX} x {GRID_MAX}. May cause collisions")
             scale = GRID_MAX / max(grid_width, grid_height)
             grid_width = int(grid_width * scale)
             grid_height = int(grid_height * scale)
             #pixel_size = min_distance * 0.5
 
-        return grid_width, grid_height
+        return [grid_width, grid_height, lon_min, lon_max, lat_min, lat_max, pixel_size]
 
     #Use latitude and longitude to convert list of points to a 2D grid
-    def rasterize_data(self, rawdata, buffer=1.05):
+    def rasterize_data(self, rawdata, id, buffer=1.05):
         print("Converting counties to grid...")
 
-        #Use density of counties to determine grid size
-        coords = rawdata[:, [1,2]]
-        #coords = np.array([[x[1], x[2]] for x in rawdata], dtype=np.float64)
-        nn_tree = KDTree(coords)
-        distances, _ = nn_tree.query(coords, k=2)
-        min_distance = np.min(distances[:, 1])
-        pixel_size = min_distance * 0.5
-
-        lon_min = rawdata[:, 1].min()
-        lon_max = rawdata[:, 1].max()
-        lat_min = rawdata[:, 2].min()
-        lat_max = rawdata[:, 2].max()
-
-        grid_width = int(np.ceil((lon_max - lon_min) / pixel_size * buffer))
-        grid_height = int(np.ceil((lat_max - lat_min) / pixel_size * buffer))
-
-        #Reduce grid size if too large for memory
-        GRID_MAX = 2048
-        if grid_width > GRID_MAX or grid_height > GRID_MAX:
-            print(f"Grid size {grid_width} x {grid_height} being reduced for safety: {GRID_MAX} x {GRID_MAX}. May cause collisions")
-            scale = GRID_MAX / max(grid_width, grid_height)
-            grid_width = int(grid_width * scale)
-            grid_height = int(grid_height * scale)
-            pixel_size = min_distance * 0.5
+        grid_width, grid_height, lon_min, lon_max, lat_min, lat_max, pixel_size = self.grid_info[id]
 
         county_mappings = []
 
@@ -385,7 +295,7 @@ class CountyDataset(Dataset):
         return grid, county_mappings, metadata
 
 #---------------------------------------------------------------------------------------------------------------
-
+#Custom batch sampler that groups maps into batches and pads them to the same size for better training results
 class SizeBasedBatchSampler(BatchSampler):
     def __init__(self, sampler, batch_size, drop_last, grid_sizes):
         super().__init__(sampler, batch_size, drop_last)
@@ -550,11 +460,15 @@ def train_model(model):
     
     # model.save("jerry_mandarin.keras")
 
+    print("Scaler for this model will be saved to current directory as: jm_scaler.bin")
+    print("The scaler and model only need to be loaded from file when not in memory.")
+    joblib.dump(normalizer, 'jm_scaler.bin')
 
-    #training_grid, county_mappings, metadata, labels_grid  = zip(*[convert_location(training_data[i]) for i in training_data])
 
-    #training_grid, county_mappings, metadata = list(training_grid), list(county_mappings), list(metadata)
-
+normalizer = StandardScaler()
+training_data = []
+#training_labels = []
+model = None
 
 
 keep_running = True
@@ -563,11 +477,8 @@ while keep_running:
     train = input("\nWould you like to train a new model? [Y/N]\n")
 
     if train.upper() == 'Y':
-        #model = create_fcn()
+        model = create_fcn()
         train_model(model)
-
-
-        #print(training_data[0][:5])
     
     # testing = input("\nWould you like to run a model? [Y/N]\n")
     # if testing.upper() == 'Y':
