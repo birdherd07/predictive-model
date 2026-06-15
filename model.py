@@ -166,25 +166,31 @@ class CountyDataset(Dataset):
         #Turn training data into a grid
         data_grid, county_mappings, metadata = self.rasterize_data(item, id)
 
-        #Make matching training label grid
-        h, w = metadata["grid_shape"]
-        labels_grid = np.zeros((2, h, w), dtype=np.float32)
+        if self.training:
+            #Make matching training label grid
+            h, w = metadata["grid_shape"]
+            labels_grid = np.zeros((2, h, w), dtype=np.float32)
 
-        for i, mapping in enumerate(county_mappings):
-            x = mapping["grid_x"]
-            y = mapping["grid_y"]
+            for i, mapping in enumerate(county_mappings):
+                x = mapping["grid_x"]
+                y = mapping["grid_y"]
 
-            labels_grid[0, y, x] = item[i][5]
-            labels_grid[1, y, x] = item[i][6]
+                labels_grid[0, y, x] = item[i][5]
+                labels_grid[1, y, x] = item[i][6]
+
+            target_tensor = torch.from_numpy(labels_grid)
 
         input_tensor = torch.from_numpy(data_grid)
-        target_tensor = torch.from_numpy(labels_grid)
 
-        return input_tensor, target_tensor, county_mappings
+
+        if self.training:
+            return input_tensor, target_tensor, county_mappings
+        else:
+            return input_tensor, county_mappings
 
     def grid_size(self, rawdata, buffer=1.05):
         #Use density of counties to determine grid size
-        print(f"grid_size {type(rawdata)}")
+        #print(f"grid_size {type(rawdata)}")
         coords = rawdata[:, [1,2]]
         nn_tree = KDTree(coords, leafsize=50)
         distances, _ = nn_tree.query(coords, k=2)
@@ -212,7 +218,7 @@ class CountyDataset(Dataset):
 
     #Use latitude and longitude to convert list of points to a 2D grid
     def rasterize_data(self, rawdata, id):
-        print("Converting counties to grid...")
+        #print("Converting counties to grid...")
 
         grid_width, grid_height, lon_min, lon_max, lat_min, lat_max, pixel_size = self.grid_info[id]
 
@@ -272,7 +278,7 @@ class SizeBasedBatchSampler(BatchSampler):
 #---------------------------------------------------------------------------------------------------------------
 
 #pad grids in given batch to the largest size and update mappings for batch index
-def pad_batch(batch):
+def pad_training(batch):
     data_grids = [item[0] for item in batch]
     label_grids = [item[1] for item in batch]
     mappings = [item[2] for item in batch]
@@ -303,6 +309,37 @@ def pad_batch(batch):
 
     return torch.stack(padded_grids), torch.stack(padded_labels), padded_mappings
     
+#ideally make training and testing collation the same function with a bool switch if i have time
+#pad grids in given batch to the largest size and update mappings for batch index
+def pad_testing(batch):
+    data_grids = [item[0] for item in batch]
+    mappings = [item[1] for item in batch]
+
+    #pad grids to the largest size grid in this batch
+    max_h = max(g.shape[1] for g in data_grids)
+    max_w = max(g.shape[2] for g in data_grids)
+
+    padded_grids = []
+    padded_mappings = []
+
+    #pad the right and bottom with 0s
+    for batch_id, (grid, label, mapping) in enumerate(zip(data_grids, mappings)):
+        pad_h = max_h - grid.shape[1]
+        pad_w = max_w - grid.shape[2]
+
+        padded_grids.append(torch.nn.functional.pad(grid, (0, pad_w, 0, pad_h), value=0))
+
+        for m in mapping:
+            padded_mappings.append({
+                'id': m['c_id'],
+                'batch_id': batch_id,
+                'x': m['grid_x'],
+                'y': m['grid_y']
+            })
+
+    return torch.stack(padded_grids), padded_mappings
+    
+
 #---------------------------------------------------------------------------------------------------------------
 
 def load_data(training=False):
@@ -351,7 +388,7 @@ def train_model(model):
 
     dataloader = DataLoader(
         dataset, batch_sampler = custom_batch_sampler,
-        collate_fn = pad_batch
+        collate_fn = pad_training
     )
 
     print("Starting training...")
@@ -427,9 +464,9 @@ while keep_running:
         model = create_fcn()
         train_model(model)
     
-    # testing = input("\nWould you like to run a model? [Y/N]\n")
-    # if testing.upper() == 'Y':
-    #     test_model()
+    testing = input("\nWould you like to run a trained model? [Y/N]\n")
+    if testing.upper() == 'Y':
+        test_model()
 
     quit = input("Would you like to quit? [Y/N]\n")
     if quit.upper() == 'Y':
