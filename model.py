@@ -1,5 +1,6 @@
 import os
 import glob
+import csv
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils.validation import check_is_fitted
@@ -28,8 +29,8 @@ def extract_predictions(fcn_output, county_mappings):
     with torch.no_grad():
         for mapping in county_mappings:
             id = mapping['id']
-            x = mapping['grid_x']
-            y = mapping['grid_y']
+            x = mapping['x']
+            y = mapping['y']
 
             pixel_prediction = fcn_output[:, y, x].cpu().numpy()
 
@@ -77,8 +78,22 @@ def test_model():
     dataset = load_data()
 
     #run model
+    for test_data, mappings in dataset:
+        print(f"{type(test_data), type(mappings)}")
 
-    #extract predictions
+
+        #test this
+        # raw_maps = model(test_data)
+        # pct_maps = tf.keras.activations.softmax(raw_maps, axis=1)
+        # county_preds = pct_maps[:, 0:2, :, :]
+        #probably need to fix this function i wrote it very early
+        # results = extract_predictions(county_preds, mappings)
+
+        #Output list of ids and predictions to file
+        # with open('predictions.csv', 'w', newline='', encoding='utf-8') as file:
+        #     writer = csv.writer(file)
+        #     for key, value in results:
+        #         writer.writerow([key, value])
 
 
 
@@ -325,9 +340,9 @@ def pad_testing(batch):
 
 #---------------------------------------------------------------------------------------------------------------
 
-def load_data(training=False):
+def load_data(training=False, sampling=False):
     file_data = []
-    folder = input("Enter the location of the folder containing data files.\n")
+    folder = input("Enter the location of the folder containing data file(s).\n")
     data_location = os.path.join(folder, "*.csv")
     data_files = glob.glob(data_location)
 
@@ -341,6 +356,12 @@ def load_data(training=False):
     for file in data_files:
         data = pd.read_csv(file, nrows=100, header=None).to_numpy()
         file_data.append(data)
+
+    #Test the model on 20% of the data bootstrap sampled
+    if sampling:
+        sample_size = round(len(data) * .2)
+        bootstrap_sample = np.random.choice(data, size=sample_size, replace=True)
+        #todo: finish this
 
     print("Processing data...")
 
@@ -436,8 +457,6 @@ def train_model(model):
 
 
 normalizer = StandardScaler()
-#training_data = []
-#training_labels = []
 model = None
 
 
