@@ -4,6 +4,7 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils.validation import check_is_fitted
 #from sklearn.compose import ColumnTransformer
+import tensorflow as tf
 import keras
 from tensorflow.keras import models, layers
 import numpy as np
@@ -55,27 +56,6 @@ def normalize_testing_np(testData: np.ndarray, populationCol: int, normalizer: S
 
 #Load test data and use a trained model to make predictions.
 def test_model():
-    if not glob.glob("*.keras"):
-        print("Warning: No trained models found.")
-        return
-    
-    folder = input("Enter the location of the folder containing testing data.\n")
-    testing_location = os.path.join(folder, "*.csv")
-    testing_files = glob.glob(testing_location)
-
-    #print(f"Found test files: {testing_files}")
-    if not testing_files:
-        print("No testing files found.")
-        return
-    else:
-        print(f"Found {len(testing_files)} testing files.\n")
-
-    ###fix this
-    testing_headers = ["ID", "LON", "LAT", "POP", "VOTES"]
-    for file in testing_files:
-        df = pd.read_csv(file, names=testing_headers)
-        print(df.head())
-
     if not model:
         model_loc = input("Enter the location of the model file.\n")
         try:
@@ -93,10 +73,8 @@ def test_model():
         except:
             print("No scaler file found in current directory.")
             return
-        
-    #normalize testing
 
-    #rasterize testing
+    dataset = load_data()
 
     #run model
 
@@ -108,75 +86,52 @@ def test_model():
 #Create a fully convolutional model.
 def create_fcn(input_channels=2, classes=2):
     print("Creating a new model...")
-    #fully convolutional network: output for each block in the map.
-    #shape: channels (presence, population), none (any), none (any)
-    inputLayer = layers.Input(shape=(input_channels, None, None))
+    # #fully convolutional network: output for each block in the map.
+    # #shape: channels (presence, population), none (any), none (any)
+    # inputLayer = layers.Input(shape=(input_channels, None, None))
 
-    #encoder: blocks of convolution layers
-    enc1 = layers.Conv2D(filters=16, kernel_size=(3, 3), activation='relu', kernel_initializer='he_normal', padding='same', data_format='channels_first')(inputLayer)
-    enc1 = layers.MaxPooling2D(pool_size=(2,2))(enc1)
+    # #encoder: blocks of convolution layers
+    # enc1 = layers.Conv2D(filters=16, kernel_size=(3, 3), activation='relu', kernel_initializer='he_normal', padding='same', data_format='channels_first')(inputLayer)
+    # enc1 = layers.MaxPooling2D(pool_size=(2,2))(enc1)
 
-    enc2 = layers.Conv2D(filters=32, kernel_size=(3,3), activation='relu', kernel_initializer='he_normal', padding='same', data_format='channels_first')(enc1)
-    enc2 = layers.Dropout(0.15)(enc2)
-    enc2 = layers.MaxPooling2D(pool_size=(2,2))(enc2)
+    # enc2 = layers.Conv2D(filters=32, kernel_size=(3,3), activation='relu', kernel_initializer='he_normal', padding='same', data_format='channels_first')(enc1)
+    # enc2 = layers.Dropout(0.15)(enc2)
+    # enc2 = layers.MaxPooling2D(pool_size=(2,2))(enc2)
 
-    enc3 = layers.Conv2D(filters=64, kernel_size=(3,3), activation='relu', kernel_initializer='he_normal', padding='same', data_format='channels_first')(enc2)
-    enc3 = layers.MaxPooling2D(pool_size=(2,2))(enc3)
+    # enc3 = layers.Conv2D(filters=64, kernel_size=(3,3), activation='relu', kernel_initializer='he_normal', padding='same', data_format='channels_first')(enc2)
+    # enc3 = layers.MaxPooling2D(pool_size=(2,2))(enc3)
 
-    #decoder: blocks of transpose layers
-    dec1 = layers.Conv2DTranspose(filters=64, kernel_size=(3,3), strides=(2,2), activation='relu', padding='same', data_format='channels_first')(enc3)
-    dec2 = layers.Conv2DTranspose(filters=32, kernel_size=(3,3), strides=(2,2), activation='relu', padding='same', data_format='channels_first')(dec1)
-    dec3 = layers.Conv2DTranspose(filters=16, kernel_size=(3,3), strides=(2,2), activation='relu', padding='same', data_format='channels_first')(dec2)
+    # #decoder: blocks of transpose layers
+    # dec1 = layers.Conv2DTranspose(filters=64, kernel_size=(3,3), strides=(2,2), activation='relu', padding='same', data_format='channels_first')(enc3)
+    # dec2 = layers.Conv2DTranspose(filters=32, kernel_size=(3,3), strides=(2,2), activation='relu', padding='same', data_format='channels_first')(dec1)
+    # dec3 = layers.Conv2DTranspose(filters=16, kernel_size=(3,3), strides=(2,2), activation='relu', padding='same', data_format='channels_first')(dec2)
     
-    #output layer: 1, 1 convolution layer with the 2 output classes
-    #leave this kernel initializer default for softmax (glorot_uniform)
-    outputLayer = layers.Conv2D(classes, kernel_size=(1,1), padding='same', data_format='channels_first')(dec3)
-    model = models.Model(inputs=[inputLayer], outputs=[outputLayer])
+    # #output layer: 1, 1 convolution layer with the 2 output classes
+    # #leave this kernel initializer default for softmax (glorot_uniform)
+    # outputLayer = layers.Conv2D(classes, kernel_size=(1,1), padding='same', data_format='channels_first')(dec3)
+    # model = models.Model(inputs=[inputLayer], outputs=[outputLayer])
+    # model.summary()
+    # #model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['acc'])
+    # return model
+
+    # Keras uses channels_first if using PyTorch backend tensors natively
+    # Shape: (Channels, Height, Width) -> Use None for dynamic shapes
+    inputs = layers.Input(shape=(input_channels, None, None))
+    
+    # Standard Convolutional block 1
+    x = layers.Conv2D(32, kernel_size=3, padding='same', data_format='channels_first')(inputs)
+    x = layers.Activation('relu')(x)
+    
+    # Convolutional block 2 (Allows information to bleed over to neighboring county pixels)
+    x = layers.Conv2D(64, kernel_size=5, padding='same', data_format='channels_first')(x)
+    x = layers.Activation('relu')(x)
+    
+    # Final layer mapping to our 2 output percentage channels
+    outputs = layers.Conv2D(classes, kernel_size=1, padding='same', data_format='channels_first')(x)
+    
+    model = keras.Model(inputs=inputs, outputs=outputs)
     model.summary()
-    #model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['acc'])
-
-#divide grids into groups of 3 for batching
-def batch_grids(grids):
-    print("Dividing data into batches...")
-    sizes = np.array([x.size for x in grids])
-    sort_order = np.argsort(sizes)
-    sorted_grids = grids[sort_order]
-
-    batches = []
-
-    for i in sorted_grids:
-        batch.append()
-
-    return sorted_grids
-
-
-#pad grids in this batch to the largest size and update mappings for batch index
-def pad_batch_old(grids, mappings):
-    #pad grids to the largest size grid in this batch
-    max_h = max(g.shape[1] for g in grids)
-    max_w = max(g.shape[2] for g in grids)
-
-    padded_grids = []
-    padded_mappings = []
-
-    #pad the right and bottom with 0s
-    for batch_id, (grid, mapping) in enumerate(zip(grids, mappings)):
-        c, h, w = grid.shape
-        pad_h = max_h - h
-        pad_w = max_w - w
-
-        padded_grid = torch.nn.functional.pad(grid, (0, pad_w, 0, pad_h), value=0)
-        padded_grids.append(padded_grid)
-
-        for m in mapping:
-            padded_mappings.append({
-                'id': m['id'],
-                'b_id': batch_id,
-                'x': m['x'],
-                'y': m['y']
-            })
-
-    return torch.stack(padded_grids), padded_mappings
+    return model
 
 #---------------------------------------------------------------------------------------------------------------
 #Custom dataset class that transforms list data into 2d rasters for FCN
@@ -256,7 +211,7 @@ class CountyDataset(Dataset):
         return [grid_width, grid_height, lon_min, lon_max, lat_min, lat_max, pixel_size]
 
     #Use latitude and longitude to convert list of points to a 2D grid
-    def rasterize_data(self, rawdata, id, buffer=1.05):
+    def rasterize_data(self, rawdata, id):
         print("Converting counties to grid...")
 
         grid_width, grid_height, lon_min, lon_max, lat_min, lat_max, pixel_size = self.grid_info[id]
@@ -350,59 +305,41 @@ def pad_batch(batch):
     
 #---------------------------------------------------------------------------------------------------------------
 
-#Load training data and train a new model.
-def train_model(model):
-    global training_data #,training_labels
-    folder = input("Enter the location of the folder containing training data.\n")
-    training_location = os.path.join(folder, "*.csv")
-    training_files = glob.glob(training_location)
+def load_data(training=False):
+    file_data = []
+    folder = input("Enter the location of the folder containing data files.\n")
+    data_location = os.path.join(folder, "*.csv")
+    data_files = glob.glob(data_location)
 
     #print(f"Found training files: {training_files}")
-    if not training_files:
-        print("No training files found.")
+    if not data_files:
+        print("No data files found.")
         return
     else:
-        print(f"Found {len(training_files)} training files.\n")
+        print(f"Found {len(data_files)} data files.\n")
 
-    # training_headers = ["ID", "LON", "LAT", "POP", "VOTES", "REP %", "DEM %"]
-    # data_headers = training_headers[:4]
-    # label_headers = training_headers[-3:]
-
-    # training_data = []
-    # training_labels = []
-
-    for file in training_files:
-        #separate the training data from the labels
-        #data = pd.read_csv(file, nrows=50, header=None, names=training_headers, usecols=data_headers)
-        #data = pd.read_csv(file, nrows=100, header=None, usecols=range(4)).to_numpy()
+    for file in data_files:
         data = pd.read_csv(file, nrows=50, header=None).to_numpy()
-        #change these cols for testing files. add column 4 if predicting # votes
-        #labels = pd.read_csv(file, nrows=100, header=None, usecols=[5, 6]).to_numpy()
-        #print(data.head())
-        # print("\n")
-        # print(data[:5])
-        # print(labels.head())
-        training_data.append(data)
-        #training_labels.append(labels)
+        file_data.append(data)
 
-    #print(training_data[0][:5])
-    # data = pd.read_csv(training_files[0], header=None, names=training_headers, usecols=data_headers)
-    # training_data.append(data)
-    # print(data.head())
+    print("Processing data...")
 
-    print("Processing training data...")
-    #normalize_training(training_data[0], "POP")
-    #normalize_training_list(training_data, "POP")
-    #normalize_training_np(training_data[0], 3)
+    file_data = np.array(file_data)
 
-    training_data = np.array(training_data)
-    #training_labels = np.array(training_labels)
+    if training:
+        normalize_training_list_np(file_data, 3, normalizer)
+    else:
+        normalize_testing(file_data, 3)
 
-    normalize_training_list_np(training_data, 3, normalizer)
-
-    print(f"{normalizer.mean_}, {normalizer.scale_}")
+    #print(f"{normalizer.mean_}, {normalizer.scale_}")
     
-    dataset = CountyDataset(training_data, True)
+    dataset = CountyDataset(file_data, training)
+    return dataset
+
+
+#Load training data and train a new model.
+def train_model(model):
+    dataset = load_data(True)
 
     base_sampler = SequentialSampler(dataset)
     custom_batch_sampler = SizeBasedBatchSampler(
@@ -419,54 +356,64 @@ def train_model(model):
 
     print("Starting training...")
 
-    for i, (padded_grids, padded_labels, mappings) in enumerate(dataloader):
-        print(f"Batch tensor shape: {padded_grids.shape}, {padded_labels.shape}")
+    epochs = 10
+    optimizer = keras.optimizers.Adam(learning_rate=1e-3)
 
-    # epochs = 10
-    # optimizer = keras.optimizers.Adam(learning_rate=1e-3)
-
-    # for epoch in range(epochs):
-
-    #     epoch_loss = 0.0
-    #     batches = 0
+    print("\n")
+    for epoch in range(epochs):
+        epoch_loss = 0.0
+        batches = 0
             
-    #     for i, (padded_grids, padded_labels, mappings) in enumerate(dataloader):
-    #         print(f"Batch tensor shape: {padded_grids.shape}, {padded_labels.shape}")
+        for i, (padded_grids, padded_labels, mappings) in enumerate(dataloader):
+            print(f"Batch tensor shape: {padded_grids.shape}, {padded_labels.shape}")
 
-    #         batch_id = [m['batch_id'] for m in mappings]
-    #         x_id = [m['x'] for m in mappings]
-    #         y_id = [m['y'] for m in mappings]
+            coords_list = [[m['batch_id'], m['y'], m['x']] for m in mappings]
 
-    #         with keras.GradientTape() as tape:
-    #             output_maps = model(padded_grids, training=True)
+            indices = tf.constant(coords_list, dtype=tf.int32)
 
-    #             predictions = output_maps[batch_id, :, y_id, x_id]
+            #gradienttape for backpropagation
+            with tf.GradientTape() as tape:
+                #batch_size, 2, h, w
+                output_maps = model(padded_grids, training=True)
+                output_maps_permuted = tf.transpose(output_maps, perm=[0, 2, 3, 1])
 
-    #             pct_predictions = keras.activations.softmax(predictions, axis=1)
+                print(type(output_maps))
 
-    #             true_labels = padded_labels[batch_id, :, y_id, x_id]
+                #predictions = output_maps[batch_idx, :, y_idx, x_idx]
+                predictions = tf.gather_nd(params=output_maps_permuted, indices=indices)
+                #print(predictions.shape)
 
-    #             loss = keras.losses.MeanSquaredError(true_labels, pct_predictions)
+                pct_predictions = keras.activations.softmax(predictions, axis=1)
+                #print(pct_predictions.shape)
 
-    #         trainable_vars = model.trainable_variables
-    #         gradients = tape.gradient(loss, trainable_vars)
-    #         optimizer.apply_gradients(zip(gradients, trainable_vars))
+                #true_labels = padded_labels[batch_id, :, y_id, x_id]
+                padded_labels_transposed = tf.transpose(padded_labels, perm=[0, 2, 3, 1])
+                true_labels = tf.gather_nd(params=padded_labels_transposed, indices=indices)
+                #true_labels = tf.transpose(true_labels, perm=[1,0])
+                #print(true_labels.shape)
 
-    #         loss += float(epoch_loss)
-    #         batches += 1
+                loss = keras.losses.mean_squared_error(true_labels, pct_predictions)
 
-    #     print(f"Epoch {epoch+1}/{epochs} - Average loss: {epoch_loss / batches:.4f}")
-    # print("Training complete. Model will be saved to current directory as: jerry_mandarin.keras")
+            trainable_vars = model.trainable_variables
+            gradients = tape.gradient(loss, trainable_vars)
+            optimizer.apply_gradients(zip(gradients, trainable_vars))
+
+            epoch_loss += float(loss)
+            batches += 1
+
+        print(f"Epoch {epoch+1}/{epochs} - Average loss: {epoch_loss / batches:.4f}")
+    print("Training complete. Model will be saved to current directory as: jerry_mandarin.keras")
     
-    # model.save("jerry_mandarin.keras")
+    model.save("jerry_mandarin.keras")
 
     print("Scaler for this model will be saved to current directory as: jm_scaler.bin")
     print("The scaler and model only need to be loaded from file when not in memory.")
+
     joblib.dump(normalizer, 'jm_scaler.bin')
 
 
 normalizer = StandardScaler()
-training_data = []
+#training_data = []
 #training_labels = []
 model = None
 
