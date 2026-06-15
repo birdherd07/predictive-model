@@ -83,49 +83,31 @@ def test_model():
 
 
 
-#Create a fully convolutional model.
-def create_fcn(input_channels=2, classes=2):
+#Create a fully convolutional model. third channel is the remainder of 100 - (r% + d%) for softmax
+def create_fcn(input_channels=2, classes=3):
     print("Creating a new model...")
-    # #fully convolutional network: output for each block in the map.
-    # #shape: channels (presence, population), none (any), none (any)
-    # inputLayer = layers.Input(shape=(input_channels, None, None))
 
-    # #encoder: blocks of convolution layers
-    # enc1 = layers.Conv2D(filters=16, kernel_size=(3, 3), activation='relu', kernel_initializer='he_normal', padding='same', data_format='channels_first')(inputLayer)
-    # enc1 = layers.MaxPooling2D(pool_size=(2,2))(enc1)
-
-    # enc2 = layers.Conv2D(filters=32, kernel_size=(3,3), activation='relu', kernel_initializer='he_normal', padding='same', data_format='channels_first')(enc1)
-    # enc2 = layers.Dropout(0.15)(enc2)
-    # enc2 = layers.MaxPooling2D(pool_size=(2,2))(enc2)
-
-    # enc3 = layers.Conv2D(filters=64, kernel_size=(3,3), activation='relu', kernel_initializer='he_normal', padding='same', data_format='channels_first')(enc2)
-    # enc3 = layers.MaxPooling2D(pool_size=(2,2))(enc3)
-
-    # #decoder: blocks of transpose layers
-    # dec1 = layers.Conv2DTranspose(filters=64, kernel_size=(3,3), strides=(2,2), activation='relu', padding='same', data_format='channels_first')(enc3)
-    # dec2 = layers.Conv2DTranspose(filters=32, kernel_size=(3,3), strides=(2,2), activation='relu', padding='same', data_format='channels_first')(dec1)
-    # dec3 = layers.Conv2DTranspose(filters=16, kernel_size=(3,3), strides=(2,2), activation='relu', padding='same', data_format='channels_first')(dec2)
-    
-    # #output layer: 1, 1 convolution layer with the 2 output classes
-    # #leave this kernel initializer default for softmax (glorot_uniform)
-    # outputLayer = layers.Conv2D(classes, kernel_size=(1,1), padding='same', data_format='channels_first')(dec3)
-    # model = models.Model(inputs=[inputLayer], outputs=[outputLayer])
-    # model.summary()
-    # #model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['acc'])
-    # return model
-
-    # Keras uses channels_first if using PyTorch backend tensors natively
-    # Shape: (Channels, Height, Width) -> Use None for dynamic shapes
+    #fully convolutional network: output for each block in the map.
+    #shape: channels (presence, population), none (any), none (any)
     inputs = layers.Input(shape=(input_channels, None, None))
     
-    # Standard Convolutional block 1
+    # convolutional block 1: neighbors in a 3x3 grid. batchnormalization layer for batches > 1
     x = layers.Conv2D(32, kernel_size=3, padding='same', data_format='channels_first')(inputs)
+    #x = layers.BatchNormalization(axis=1)(x)
     x = layers.Activation('relu')(x)
     
-    # Convolutional block 2 (Allows information to bleed over to neighboring county pixels)
-    x = layers.Conv2D(64, kernel_size=5, padding='same', data_format='channels_first')(x)
+    # convolutional block 2: dilation to wider area
+    x = layers.Conv2D(64, kernel_size=3, padding='same', dilation_rate=2, data_format='channels_first')(x)
+    #x = layers.BatchNormalization(axis=1)(x)
+    x = layers.Activation('relu')(x)
+
+    # convolutional block 3
+    x = layers.Conv2D(64, kernel_size=3, padding='same', data_format='channels_first')(x)
+    #x = layers.BatchNormalization(axis=1)(x)
     x = layers.Activation('relu')(x)
     
+    x = layers.Dropout(rate=0.2)(x)
+
     # Final layer mapping to our 2 output percentage channels
     outputs = layers.Conv2D(classes, kernel_size=1, padding='same', data_format='channels_first')(x)
     
@@ -169,7 +151,7 @@ class CountyDataset(Dataset):
         if self.training:
             #Make matching training label grid
             h, w = metadata["grid_shape"]
-            labels_grid = np.zeros((2, h, w), dtype=np.float32)
+            labels_grid = np.zeros((3, h, w), dtype=np.float32)
 
             for i, mapping in enumerate(county_mappings):
                 x = mapping["grid_x"]
@@ -177,6 +159,7 @@ class CountyDataset(Dataset):
 
                 labels_grid[0, y, x] = item[i][5]
                 labels_grid[1, y, x] = item[i][6]
+                labels_grid[2, y, x] = 100 - (item[i][6] + item[i][5])
 
             target_tensor = torch.from_numpy(labels_grid)
 
@@ -356,7 +339,7 @@ def load_data(training=False):
         print(f"Found {len(data_files)} data files.\n")
 
     for file in data_files:
-        data = pd.read_csv(file, nrows=50, header=None).to_numpy()
+        data = pd.read_csv(file, nrows=100, header=None).to_numpy()
         file_data.append(data)
 
     print("Processing data...")
@@ -393,7 +376,7 @@ def train_model(model):
 
     print("Starting training...")
 
-    epochs = 10
+    epochs = 7
     optimizer = keras.optimizers.Adam(learning_rate=1e-3)
 
     print("\n")
@@ -408,15 +391,18 @@ def train_model(model):
 
             indices = tf.constant(coords_list, dtype=tf.int32)
 
+            cce_loss_fn = tf.keras.losses.CategoricalCrossentropy()
+
             #gradienttape for backpropagation
             with tf.GradientTape() as tape:
-                #batch_size, 2, h, w
+                #batch_size, 3, h, w
                 output_maps = model(padded_grids, training=True)
+                #move channels to end
                 output_maps_permuted = tf.transpose(output_maps, perm=[0, 2, 3, 1])
-
-                print(type(output_maps))
+                #print(type(output_maps))
 
                 #predictions = output_maps[batch_idx, :, y_idx, x_idx]
+                #[counties, 3]
                 predictions = tf.gather_nd(params=output_maps_permuted, indices=indices)
                 #print(predictions.shape)
 
@@ -429,7 +415,7 @@ def train_model(model):
                 #true_labels = tf.transpose(true_labels, perm=[1,0])
                 #print(true_labels.shape)
 
-                loss = keras.losses.mean_squared_error(true_labels, pct_predictions)
+                loss = cce_loss_fn(true_labels, pct_predictions)
 
             trainable_vars = model.trainable_variables
             gradients = tape.gradient(loss, trainable_vars)
