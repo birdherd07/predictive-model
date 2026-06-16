@@ -75,25 +75,29 @@ def test_model():
             print("No scaler file found in current directory.")
             return
 
-    dataset = load_data()
+    dataset, length = load_data()
 
     #run model
-    for test_data, mappings in dataset:
-        print(f"{type(test_data), type(mappings)}")
+    for i in range(length):
+        #3, h, w
+        input_tensor, county_mappings = dataset[i]
+        model_input = tf.expand_dims(input_tensor, axis=0)
 
+        output_map = model(model_input, training=False)
+        pct_map = tf.keras.activations.softmax(output_map, axis=1)
 
-        #test this
-        # raw_maps = model(test_data)
-        # pct_maps = tf.keras.activations.softmax(raw_maps, axis=1)
-        # county_preds = pct_maps[:, 0:2, :, :]
-        #probably need to fix this function i wrote it very early
-        # results = extract_predictions(county_preds, mappings)
+        #3, h, w
+        pct_map = tf.squeeze(pct_map, axis=0)
+        results = extract_predictions(pct_map, county_mappings)
 
-        #Output list of ids and predictions to file
-        # with open('predictions.csv', 'w', newline='', encoding='utf-8') as file:
-        #     writer = csv.writer(file)
-        #     for key, value in results:
-        #         writer.writerow([key, value])
+        print(f"Predictions will be written to file as: predictions{i+1}.csv\n")
+
+        #Output list of ids and predictions to csv
+        #format: id, R%, D%
+        with open(f'predictions{i+1}.csv', 'w', newline='', encoding='utf-8') as file:
+            writer = csv.writer(file)
+            for key, value in results:
+                writer.writerow([key, value])
 
 
 
@@ -138,7 +142,7 @@ class CountyDataset(Dataset):
         #each 2d ndarr is a group of counties of form of format 
         #ID LON LAT POP VOTES R% D% (training = True)
         #or 
-        #ID LON LAT POP (testing / training = False)
+        #ID LON LAT POP (testing. training = False)
         #todo: implement testing version
 
         self.data = data_list
@@ -369,14 +373,15 @@ def load_data(training=False, sampling=False):
 
     if training:
         normalize_training_list_np(file_data, 3, normalizer)
+        dataset = CountyDataset(file_data, training)
+        return dataset
     else:
         normalize_testing(file_data, 3)
+        dataset = CountyDataset(file_data, training)
+        return dataset, len(data_files)
 
     #print(f"{normalizer.mean_}, {normalizer.scale_}")
     
-    dataset = CountyDataset(file_data, training)
-    return dataset
-
 
 #Load training data and train a new model.
 def train_model(model):
