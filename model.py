@@ -30,6 +30,8 @@ def extract_predictions(fcn_output, county_mappings):
 
             pixel_prediction = fcn_output[:, y, x].cpu().numpy()
 
+            #TODO: multiply these by 100 to turn back to percents
+
             results[id] = pixel_prediction
 
     #dictionary mapping {county ID: prediction vector[2]} <- D% and R%
@@ -45,7 +47,11 @@ def normalize_training_list(trainingListData, populationCol: int, normalizer: St
     #Transform each frame using the aggregated values
     for trainingData in trainingListData:
         trainingData[:, [populationCol]] = normalizer.transform(trainingData[:, [populationCol]])  
+        #turn percentages into decimals for better training
+        trainingData[:, 5] *= .01
+        trainingData[:, 6] *= .01
     #print(f"{normalizer.mean_}, {normalizer.scale_}")
+
 
 #Use the normalizer from training to scale the population column of test data.
 def normalize_testing_list(testListData, populationCol: int, normalizer: StandardScaler):
@@ -113,12 +119,12 @@ def create_fcn(input_channels=2, classes=3):
     x = layers.Activation('relu')(x)
     
     # convolutional block 2: dilation to wider area
-    x = layers.Conv2D(64, kernel_size=3, padding='same', dilation_rate=2, data_format='channels_first')(x)
-    #x = layers.BatchNormalization(axis=1)(x)
-    x = layers.Activation('relu')(x)
+    # x = layers.Conv2D(64, kernel_size=3, padding='same', dilation_rate=2, data_format='channels_first')(x)
+    # #x = layers.BatchNormalization(axis=1)(x)
+    # x = layers.Activation('relu')(x)
 
     # convolutional block 3
-    x = layers.Conv2D(64, kernel_size=3, padding='same', data_format='channels_first')(x)
+    x = layers.Conv2D(64, kernel_size=5, padding='same', data_format='channels_first')(x)
     #x = layers.BatchNormalization(axis=1)(x)
     x = layers.Activation('relu')(x)
     
@@ -303,7 +309,7 @@ class CountyDataset(Dataset):
         #Reduce grid size if too large for memory
         GRID_MAX = 2048
         if grid_width > GRID_MAX or grid_height > GRID_MAX:
-            print(f"Grid size {grid_width} x {grid_height} being reduced for safety: {GRID_MAX} x {GRID_MAX}. May cause collisions")
+            #print(f"Grid size {grid_width} x {grid_height} being reduced for safety: {GRID_MAX} x {GRID_MAX}. May cause collisions")
             scale = GRID_MAX / max(grid_width, grid_height)
             grid_width = int(grid_width * scale)
             grid_height = int(grid_height * scale)
@@ -351,7 +357,7 @@ class CountyDataset(Dataset):
 
                 labels_grid[0, y, x] = rawdata[i][5]
                 labels_grid[1, y, x] = rawdata[i][6]
-                labels_grid[2, y, x] = 100 - (rawdata[i][6] + rawdata[i][5])
+                labels_grid[2, y, x] = 1.0 - (rawdata[i][6] + rawdata[i][5])
 
             target_tensor = torch.from_numpy(labels_grid)
 
@@ -502,7 +508,7 @@ def train_model(model):
     #     collate_fn = pad_training
     # )
 
-    BATCH_SIZE = 16
+    BATCH_SIZE = 32
 
     dataloader = DataLoader(
         dataset=dataset,
@@ -515,7 +521,7 @@ def train_model(model):
     print("Starting training...")
 
     epochs = 7
-    optimizer = keras.optimizers.Adam(learning_rate=1e-3)
+    optimizer = keras.optimizers.Adam(learning_rate=.0001)
 
     print("\n")
     for epoch in range(epochs):
@@ -523,7 +529,8 @@ def train_model(model):
         batches = 0
             
         for i, (padded_grids, padded_labels, mappings) in enumerate(dataloader):
-            print(f"Batch tensor shape: {padded_grids.shape}, {padded_labels.shape}")
+            #print(f"Batch tensor shape: {padded_grids.shape}, {padded_labels.shape}")
+            print(f"Batch {i+1}")
 
             coords_list = [[m['batch_id'], m['grid_y'], m['grid_x']] for m in mappings]
 
@@ -562,7 +569,7 @@ def train_model(model):
             epoch_loss += float(loss)
             batches += 1
 
-        print(f"Epoch {epoch+1}/{epochs} - Average loss: {epoch_loss / batches:.4f}")
+        print(f"Epoch {epoch+1}/{epochs} - Average loss: {epoch_loss / batches:.4f}\n")
     print("Training complete. Model will be saved to current directory as: jerry_mandarin.keras")
     
     model.save("jerry_mandarin.keras")
