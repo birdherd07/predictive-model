@@ -279,7 +279,7 @@ class CountyDataset(Dataset):
         grid_height = int(np.ceil((lat_max - lat_min) / pixel_size * buffer))
 
         #Reduce grid size if too large for memory
-        GRID_MAX = 8192
+        GRID_MAX = 4096
         if grid_width > GRID_MAX or grid_height > GRID_MAX:
             #print(f"Grid size {grid_width} x {grid_height} being reduced for safety: {GRID_MAX} x {GRID_MAX}. May cause collisions")
             scale = GRID_MAX / max(grid_width, grid_height)
