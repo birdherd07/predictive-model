@@ -18,26 +18,6 @@ import joblib
 # A machine learning model which takes test data files containing only population and location data 
 # and produces predictions for the vote proportions in each block
 
-#Maps FCN output tensor back to original county IDs
-def extract_predictions(fcn_output, county_mappings):
-    results = []
-
-
-    for mapping in county_mappings:
-        id = mapping['c_id']
-        x = mapping['grid_x']
-        y = mapping['grid_y']
-
-        r_pct = float(fcn_output[0, y, x]) * 100
-        d_pct = float(fcn_output[1, y, x]) * 100
-
-
-        results.append([id, r_pct, d_pct])
-
-    #dictionary mapping {county ID: prediction vector[2]} <- D% and R%
-    return results
-
-
 #Standardize population column of training data using z-score normalization (collection of state 2d ndarrays)
 def normalize_training_list(trainingListData, populationCol: int, normalizer: StandardScaler):
     #Calculate the mean and standard deviation over all training ndarrays
@@ -51,7 +31,6 @@ def normalize_training_list(trainingListData, populationCol: int, normalizer: St
         trainingData[:, 5] *= .01
         trainingData[:, 6] *= .01
     #print(f"{normalizer.mean_}, {normalizer.scale_}")
-
 
 #Use the normalizer from training to scale the population column of test data.
 def normalize_testing_list(testListData, populationCol: int, normalizer: StandardScaler):
@@ -101,9 +80,9 @@ def test_model(model):
         
     bootstrap = input("Use only a bootstrap sample of data instead of all? [Y/N]\n")
     if bootstrap.upper() == 'Y':
-        dataset = load_data(False, True)
+        dataset, ledger = load_data(False, True)
     else:
-        dataset = load_data(False, False)
+        dataset, ledger = load_data(False, False)
 
     length = len(dataset)
 
@@ -111,7 +90,10 @@ def test_model(model):
 
     print(f"Predictions will be written to file as: {name}.csv\n")
 
-    predictions = {}
+    #predictions = {}
+    predictions = []
+
+    processed_ids = set()
     #run model
     for i in range(length):
         print(f"Predicting batch {i+1} of {length}")
@@ -126,30 +108,39 @@ def test_model(model):
         pct_map = tf.squeeze(pct_map, axis=0)
         
         for mapping in county_mappings:
-            id = mapping['c_id']
+            #id = mapping['c_id']
+            spatial_key = mapping["c_id"]
             x = mapping['grid_x']
             y = mapping['grid_y']
 
             r_pct = float(pct_map[0, y, x]) * 100
             d_pct = float(pct_map[1, y, x]) * 100
 
-            predictions[id] = {
-                "R": r_pct,
-                "D": d_pct
-            }
+            if spatial_key in ledger:
+                for array_id, row_id, original_id in ledger[spatial_key]:
+                    if original_id not in processed_ids:
+                        processed_ids.add(original_id)
+                        predictions.append([original_id, r_pct, d_pct])
 
-    final_predictions = [
-        {"county_id": cid, **data} for cid, data in predictions.items()
-    ]
+    #         predictions[id] = {
+    #             "R": r_pct,
+    #             "D": d_pct
+    #         }
 
-    print(len(final_predictions))
+    # final_predictions = [
+    #     {"county_id": cid, **data} for cid, data in predictions.items()
+    # ]
+
+    print(len(predictions))
+
 
     #Output list of ids and predictions to csv
     #format: id, R%, D%
     with open(f'{name}.csv', 'a', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
-        for row in final_predictions:
-            writer.writerow(row.values())
+        writer.writerows(predictions)
+        # for row in final_predictions:
+        #     writer.writerow(row.values())
         # for item in results:
         #     writer.writerow([key, value])
 
@@ -276,7 +267,7 @@ class CountyDataset(Dataset):
         if len(min_distances) > 0:
             min_distance = np.min(min_distances)
         else:
-            min_distance = 0.1
+            min_distance = 0.01
         pixel_size = min_distance * 0.5
 
         lon_min = rawdata[:, 1].min()
@@ -288,7 +279,7 @@ class CountyDataset(Dataset):
         grid_height = int(np.ceil((lat_max - lat_min) / pixel_size * buffer))
 
         #Reduce grid size if too large for memory
-        GRID_MAX = 2048
+        GRID_MAX = 8192
         if grid_width > GRID_MAX or grid_height > GRID_MAX:
             #print(f"Grid size {grid_width} x {grid_height} being reduced for safety: {GRID_MAX} x {GRID_MAX}. May cause collisions")
             scale = GRID_MAX / max(grid_width, grid_height)
@@ -301,10 +292,19 @@ class CountyDataset(Dataset):
         #Channel 0: population. Channel 1: presence/absence of a county
         grid = np.zeros((2, grid_height, grid_width), dtype=np.float32)
 
+        occupied_pixels = set()
+        clash_count = 0
+
         for row in rawdata:
             # Map to [0, width-1] and [0, height-1]
             x = int(np.round(((row[1] - lon_min) / (lon_max - lon_min)) * (grid_width - 1)))
             y = int(np.round(((row[2] - lat_min) / (lat_max - lat_min)) * (grid_height - 1)))
+
+            pxcoord = (y, x)
+            if pxcoord in occupied_pixels:
+                clash_count += 1
+            else:
+                occupied_pixels.add(pxcoord)
 
             #Make north at top of grid
             invert_y = (grid_height - 1) - y
@@ -313,9 +313,13 @@ class CountyDataset(Dataset):
             grid[0, invert_y, x] += row[3]
             grid[1, invert_y, x] = 1.0
 
+
+            spatial_key = f"{row[1]}_{row[2]}"
+
             #For retrieving counties by ID from FCN output
             county_mappings.append({
-                'c_id': row[0],
+                #'c_id': row[0],
+                'c_id': spatial_key,
                 'grid_x': x,
                 'grid_y': invert_y
             })
@@ -337,6 +341,7 @@ class CountyDataset(Dataset):
 
         input_tensor = torch.from_numpy(grid)
 
+        print(f"Clash count: {clash_count}")
 
         if self.training:
             return input_tensor, target_tensor, county_mappings
@@ -368,6 +373,110 @@ def patch_collate_fn(batch):
     return batched_inputs, batched_targets, flattened_mappings
 
 #---------------------------------------------------------------------------------------------------------------
+def pre_aggregate_data(list_of_arrays, training=False, precision=2):
+    #Each row in an array is: [id, lat, lon, population, percent_a, percent_b]
+    
+    #Returns a list of clean 2D numpy arrays where colliding points are 
+    #aggregated, but keeps a reference ledger to unpack later.
+    # Global dictionary to map rounded spatial coordinates to their ledger
+    coordinate_buckets = {}
+
+    for array_idx, arr in enumerate(list_of_arrays):
+        for row_idx in range(arr.shape[0]):
+            row = arr[row_idx]
+            
+            entity_id = row[0]
+            lat       = row[1]
+            lon       = row[2]
+            pop       = row[3]
+            if training:
+                votes     = row[4]
+                pct_a     = row[5]
+                pct_b     = row[6]
+            
+            # Create a unique string key by rounding coordinates
+            rounded_lat = round(lat, precision)
+            rounded_lon = round(lon, precision)
+            spatial_key = f"{rounded_lat}_{rounded_lon}"
+            
+            if spatial_key not in coordinate_buckets:
+                coordinate_buckets[spatial_key] = {
+                    "lat": rounded_lat,
+                    "lon": rounded_lon,
+                    "total_pop": 0.0,
+                    "sum_weighted_a": 0.0,
+                    "sum_weighted_b": 0.0,
+                    "original_rows": []  # ledger of original rows
+                }
+            
+            # Handle population-weighted targets
+            weight = max(pop, 1.0) # Avoid division by zero if pop is 0
+            coordinate_buckets[spatial_key]["total_pop"] += weight
+            if training:
+                coordinate_buckets[spatial_key]["sum_weighted_a"] += (pct_a * weight)
+                coordinate_buckets[spatial_key]["sum_weighted_b"] += (pct_b * weight)
+            
+            # Track exactly where this row came from to unpack it later
+            # Storing (array_idx, row_idx, original_id)
+            coordinate_buckets[spatial_key]["original_rows"].append((array_idx, row_idx, entity_id))
+
+    # build one aggregated array per state/file matching original list length
+    aggregated_lists = [[] for _ in range(len(list_of_arrays))]
+    
+    # Global tracking ledger to pass to test loop later
+    # Format: { spatial_node_key: [(array_idx, row_idx, entity_id), ...] }
+    extraction_ledger = {}
+
+    for key, bucket in coordinate_buckets.items():
+        total_p = bucket["total_pop"]
+        
+        if training:
+            # Calculate the proper weighted average percentages for this single pixel
+            mean_a = bucket["sum_weighted_a"] / total_p
+            mean_b = bucket["sum_weighted_b"] / total_p
+            
+        # assign this aggregated pixel node to the array_idx of its FIRST original point
+        # to preserve state-by-state file grouping.
+        primary_array_idx = bucket["original_rows"][0][0]
+
+        if training:       
+            # Synthesize the new compressed row
+            # use a dummy ID (-999) or the bucket hash string converted to float
+            aggregated_row = [
+                -999.0,          # Dummy ID for the model layer
+                bucket["lat"],   
+                bucket["lon"],   
+                total_p,
+                votes,         
+                mean_a,          
+                mean_b           
+            ]
+        else:
+            aggregated_row = [
+                -999.0,          
+                bucket["lat"],   
+                bucket["lon"],   
+                total_p         
+            ]
+        
+        aggregated_lists[primary_array_idx].append(aggregated_row)
+        
+        if not training:
+            # Save the map coordinates to the extraction ledger using the key
+            extraction_ledger[key] = bucket["original_rows"]
+
+    # Convert the sub-lists back into 2D NumPy arrays
+    output_list_of_arrays = []
+    for sub_list in aggregated_lists:
+        if len(sub_list) > 0:
+            output_list_of_arrays.append(np.array(sub_list))
+        else:
+            output_list_of_arrays.append(np.empty((0, 6))) # Keep empty placeholders intact
+    if training:
+        return output_list_of_arrays, None
+    else:
+        return output_list_of_arrays, extraction_ledger
+
 
 def load_data(training=False, sampling=False):
     file_data = []
@@ -397,6 +506,8 @@ def load_data(training=False, sampling=False):
             file_data.append(data)
 
     print("Processing data...")
+    #TODO training switch
+    file_data, ledger = pre_aggregate_data(file_data, training)
 
     if training:
         normalize_training_list(file_data, 3, normalizer)
@@ -404,7 +515,8 @@ def load_data(training=False, sampling=False):
         normalize_testing_list(file_data, 3, normalizer)
         
     dataset = CountyDataset(file_data, training)
-    return dataset
+    #TODO training switch
+    return dataset, ledger
 
     #print(f"{normalizer.mean_}, {normalizer.scale_}")
     
@@ -412,7 +524,7 @@ def load_data(training=False, sampling=False):
 #Load training data and train a new model.
 def train_model(model):
     global normalizer
-    dataset = load_data(True)
+    dataset, _ = load_data(True)
 
     BATCH_SIZE = 32
 
