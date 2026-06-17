@@ -33,5 +33,6 @@ Group members: James, Evan, Madelyn, Rachel
     - Otherwise, answer 'y' to use only a 20% bootstrap sample of the test data.
   - When prompted, enter the directory of the folder containing all of the csv testing files formatted as ID, LON, LAT, POP.
   - When prompted, enter a name for the output csv file of model predictions.
-  - Wait for testing to complete. The specified name csv file will be savedto the current directory in the format ID, R%, D%.
+  - Wait for testing to complete.
+  - The specified name csv file will be saved to the current directory in the format ID, R%, D%.
 
