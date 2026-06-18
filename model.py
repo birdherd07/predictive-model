@@ -4,15 +4,13 @@ import csv
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils.validation import check_is_fitted
-#from sklearn.compose import ColumnTransformer
 import tensorflow as tf
 import keras
 from tensorflow.keras import models, layers
 import numpy as np
-#from scipy.spatial import KDTree
 from scipy.spatial import cKDTree as KDTree
 import torch
-from torch.utils.data import Dataset, DataLoader, BatchSampler, SequentialSampler
+from torch.utils.data import Dataset, DataLoader
 import joblib
 
 # A machine learning model which takes test data files containing only population and location data 
@@ -90,7 +88,6 @@ def test_model(model):
 
     print(f"Predictions will be written to file as: {name}.csv\n")
 
-    #predictions = {}
     predictions = []
 
     processed_ids = set()
@@ -108,7 +105,6 @@ def test_model(model):
         pct_map = tf.squeeze(pct_map, axis=0)
         
         for mapping in county_mappings:
-            #id = mapping['c_id']
             spatial_key = mapping["c_id"]
             x = mapping['grid_x']
             y = mapping['grid_y']
@@ -122,16 +118,7 @@ def test_model(model):
                         processed_ids.add(original_id)
                         predictions.append([original_id, r_pct, d_pct])
 
-    #         predictions[id] = {
-    #             "R": r_pct,
-    #             "D": d_pct
-    #         }
-
-    # final_predictions = [
-    #     {"county_id": cid, **data} for cid, data in predictions.items()
-    # ]
-
-    print(len(predictions))
+    print(f"{len(predictions)} done. Writing to file...")
 
 
     #Output list of ids and predictions to csv
@@ -139,10 +126,6 @@ def test_model(model):
     with open(f'{name}.csv', 'a', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
         writer.writerows(predictions)
-        # for row in final_predictions:
-        #     writer.writerow(row.values())
-        # for item in results:
-        #     writer.writerow([key, value])
 
     print("Predictions complete.\n")
 
@@ -160,13 +143,8 @@ def create_fcn(input_channels=2, classes=3):
     x = layers.Conv2D(32, kernel_size=3, padding='same', data_format='channels_first')(inputs)
     #x = layers.BatchNormalization(axis=1)(x)
     x = layers.Activation('relu')(x)
-    
-    # convolutional block 2: dilation to wider area. idk man this seems to make it worse
-    # x = layers.Conv2D(64, kernel_size=3, padding='same', dilation_rate=2, data_format='channels_first')(x)
-    # #x = layers.BatchNormalization(axis=1)(x)
-    # x = layers.Activation('relu')(x)
 
-    # convolutional block 3
+    # convolutional block 2
     x = layers.Conv2D(64, kernel_size=5, padding='same', data_format='channels_first')(x)
     #x = layers.BatchNormalization(axis=1)(x)
     x = layers.Activation('relu')(x)
@@ -177,7 +155,7 @@ def create_fcn(input_channels=2, classes=3):
     outputs = layers.Conv2D(classes, kernel_size=1, padding='same', data_format='channels_first')(x)
     
     model = keras.Model(inputs=inputs, outputs=outputs)
-    model.summary()
+    #model.summary()
     return model
 
 #---------------------------------------------------------------------------------------------------------------
@@ -203,7 +181,6 @@ class CountyDataset(Dataset):
             self._slice_and_store(large_input, large_target, large_mappings)
     
     def __len__(self):
-        #return self.data.shape[0]
         return len(self.input_patches)
 
     #get transformed data and labels
@@ -256,9 +233,7 @@ class CountyDataset(Dataset):
 
     #Use latitude and longitude to convert list of points to a 2D grid
     def rasterize_data(self, rawdata, buffer=1.05):
-        #print("Converting counties to grid...")
-        #Use density of counties to determine grid size
-        #print(f"grid_size {type(rawdata)}")
+        #Use density to determine grid size
         coords = rawdata[:, [1,2]]
         nn_tree = KDTree(coords, leafsize=50)
         distances, _ = nn_tree.query(coords, k=2)
@@ -281,7 +256,6 @@ class CountyDataset(Dataset):
         #Reduce grid size if too large for memory
         GRID_MAX = 4096
         if grid_width > GRID_MAX or grid_height > GRID_MAX:
-            #print(f"Grid size {grid_width} x {grid_height} being reduced for safety: {GRID_MAX} x {GRID_MAX}. May cause collisions")
             scale = GRID_MAX / max(grid_width, grid_height)
             grid_width = int(grid_width * scale)
             grid_height = int(grid_height * scale)
@@ -292,19 +266,19 @@ class CountyDataset(Dataset):
         #Channel 0: population. Channel 1: presence/absence of a county
         grid = np.zeros((2, grid_height, grid_width), dtype=np.float32)
 
-        occupied_pixels = set()
-        clash_count = 0
+        # occupied_pixels = set()
+        # clash_count = 0
 
         for row in rawdata:
             # Map to [0, width-1] and [0, height-1]
             x = int(np.round(((row[1] - lon_min) / (lon_max - lon_min)) * (grid_width - 1)))
             y = int(np.round(((row[2] - lat_min) / (lat_max - lat_min)) * (grid_height - 1)))
 
-            pxcoord = (y, x)
-            if pxcoord in occupied_pixels:
-                clash_count += 1
-            else:
-                occupied_pixels.add(pxcoord)
+            # pxcoord = (y, x)
+            # if pxcoord in occupied_pixels:
+            #     clash_count += 1
+            # else:
+            #     occupied_pixels.add(pxcoord)
 
             #Make north at top of grid
             invert_y = (grid_height - 1) - y
@@ -318,7 +292,6 @@ class CountyDataset(Dataset):
 
             #For retrieving counties by ID from FCN output
             county_mappings.append({
-                #'c_id': row[0],
                 'c_id': spatial_key,
                 'grid_x': x,
                 'grid_y': invert_y
@@ -341,7 +314,7 @@ class CountyDataset(Dataset):
 
         input_tensor = torch.from_numpy(grid)
 
-        print(f"Clash count: {clash_count}")
+        #print(f"Clash count: {clash_count}")
 
         if self.training:
             return input_tensor, target_tensor, county_mappings
@@ -373,9 +346,9 @@ def patch_collate_fn(batch):
     return batched_inputs, batched_targets, flattened_mappings
 
 #---------------------------------------------------------------------------------------------------------------
-def pre_aggregate_data(list_of_arrays, training=False, precision=2):
-    #Each row in an array is: [id, lat, lon, population, percent_a, percent_b]
-    
+def pre_aggregate_data(list_of_arrays, training=False, precision=3):
+    #Each row in an array is: [id, lon, lat, population, percent_a, percent_b] for training
+    #OR id lon lat pop for testing
     #Returns a list of clean 2D numpy arrays where colliding points are 
     #aggregated, but keeps a reference ledger to unpack later.
     # Global dictionary to map rounded spatial coordinates to their ledger
@@ -386,8 +359,8 @@ def pre_aggregate_data(list_of_arrays, training=False, precision=2):
             row = arr[row_idx]
             
             entity_id = row[0]
-            lat       = row[1]
-            lon       = row[2]
+            lon       = row[1]
+            lat       = row[2]
             pop       = row[3]
             if training:
                 votes     = row[4]
@@ -397,12 +370,12 @@ def pre_aggregate_data(list_of_arrays, training=False, precision=2):
             # Create a unique string key by rounding coordinates
             rounded_lat = round(lat, precision)
             rounded_lon = round(lon, precision)
-            spatial_key = f"{rounded_lat}_{rounded_lon}"
+            spatial_key = f"{rounded_lon}_{rounded_lat}"
             
             if spatial_key not in coordinate_buckets:
                 coordinate_buckets[spatial_key] = {
-                    "lat": rounded_lat,
                     "lon": rounded_lon,
+                    "lat": rounded_lat,
                     "total_pop": 0.0,
                     "sum_weighted_a": 0.0,
                     "sum_weighted_b": 0.0,
@@ -443,9 +416,9 @@ def pre_aggregate_data(list_of_arrays, training=False, precision=2):
             # Synthesize the new compressed row
             # use a dummy ID (-999) or the bucket hash string converted to float
             aggregated_row = [
-                -999.0,          # Dummy ID for the model layer
+                -999.0,          # Dummy ID for the model layer   
+                bucket["lon"],
                 bucket["lat"],   
-                bucket["lon"],   
                 total_p,
                 votes,         
                 mean_a,          
@@ -453,9 +426,9 @@ def pre_aggregate_data(list_of_arrays, training=False, precision=2):
             ]
         else:
             aggregated_row = [
-                -999.0,          
-                bucket["lat"],   
+                -999.0,             
                 bucket["lon"],   
+                bucket["lat"],
                 total_p         
             ]
         
@@ -484,7 +457,6 @@ def load_data(training=False, sampling=False):
     data_location = os.path.join(folder, "*.csv")
     data_files = glob.glob(data_location)
 
-    #print(f"Found training files: {training_files}")
     if not data_files:
         print("No csv data files found.")
         return
@@ -497,10 +469,10 @@ def load_data(training=False, sampling=False):
         #Test the model on 20% of the data
         if not training and sampling:
             sample_size = round(len(data) * .2)
+            print(f"Sample size: {sample_size}")
             rng = np.random.default_rng()
             row_indices = rng.choice(data.shape[0], size=sample_size, replace=True)
             bootstrap_sample = data[row_indices, :]
-            #bootstrap_sample = np.random.choice(data, size=sample_size, replace=True)
             file_data.append(bootstrap_sample)
         else:
             file_data.append(data)
@@ -547,7 +519,6 @@ def train_model(model):
         batches = 0
             
         for i, (padded_grids, padded_labels, mappings) in enumerate(dataloader):
-            #print(f"Batch tensor shape: {padded_grids.shape}, {padded_labels.shape}")
             print(f"Batch {i+1}")
 
             coords_list = [[m['batch_id'], m['grid_y'], m['grid_x']] for m in mappings]
@@ -562,21 +533,15 @@ def train_model(model):
                 output_maps = model(padded_grids, training=True)
                 #move channels to end
                 output_maps_permuted = tf.transpose(output_maps, perm=[0, 2, 3, 1])
-                #print(type(output_maps))
 
                 #predictions = output_maps[batch_idx, :, y_idx, x_idx]
                 #[counties, 3]
                 predictions = tf.gather_nd(params=output_maps_permuted, indices=indices)
-                #print(predictions.shape)
 
                 pct_predictions = keras.activations.softmax(predictions, axis=1)
-                #print(pct_predictions.shape)
 
-                #true_labels = padded_labels[batch_id, :, y_id, x_id]
                 padded_labels_transposed = tf.transpose(padded_labels, perm=[0, 2, 3, 1])
                 true_labels = tf.gather_nd(params=padded_labels_transposed, indices=indices)
-                #true_labels = tf.transpose(true_labels, perm=[1,0])
-                #print(true_labels.shape)
 
                 loss = cce_loss_fn(true_labels, pct_predictions)
 
