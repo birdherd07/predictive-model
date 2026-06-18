@@ -12,14 +12,14 @@ Group members: James, Evan, Madelyn, Rachel
   - States: CA, CO, MO, MT, NY, PA, TN, TX, WI   
 
 # Usage
-### **Training a new model:**
+### **Training a new model:** Time estimate: ~10-15 minutes for 9 states of blocks
   - Run model.py
   - When prompted, enter 'y' when asked if you would like to train a new model. **Note** this will overwrite any existing model and/or scaler in the current directory.
   - When prompted, enter the directory of the folder containing all of the csv training files formatted as above.
   - Wait for training to complete.
   - The trained model will be saved to the current directory as 'jerry_mandarin.keras' and its scaler will be saved as 'jm_scaler.bin'.
   - From here, the trained model can be run immediately if desired.
-### **Running a trained model:**
+### **Running a trained model:** Time estimate: ~15-30 minutes for 150,000 blocks
   - Run model.py if not already running
   - When prompted, answer 'n' when asked if you would like to train a new model.
   - When prompted, answer 'y' when asked if you would like to run a trained model.
