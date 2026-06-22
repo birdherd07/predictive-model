@@ -186,6 +186,7 @@ def write_assignments(
                         "state": result["state"],
                         "district": assignment["district"],
                         "district_target_party": assignment["district_target_party"],
+                        "district_winner": winners[int(assignment["district"])],
                     }
                 )
                 rows_written += 1
