@@ -86,19 +86,6 @@ def test_model(model):
 
     length = len(dataset)
 
-    # Native Windows TensorFlow runs NHWC convolutions far faster on CPU. The
-    # saved training model is NCHW, so rebuild the same inference graph and copy
-    # its weights without changing any learned values.
-    inputs = layers.Input(shape=(None, None, 2))
-    x = layers.Conv2D(32, kernel_size=3, padding='same')(inputs)
-    x = layers.Activation('relu')(x)
-    x = layers.Conv2D(64, kernel_size=5, padding='same')(x)
-    x = layers.Activation('relu')(x)
-    x = layers.Dropout(rate=0.2)(x)
-    outputs = layers.Conv2D(3, kernel_size=1, padding='same')(x)
-    inference_model = keras.Model(inputs=inputs, outputs=outputs)
-    inference_model.set_weights(model.get_weights())
-
     name = input("Enter a name for the predictions file.\n ")
 
     print(f"Predictions will be written to file as: {name}.csv\n")
@@ -110,12 +97,12 @@ def test_model(model):
     for i in range(length):
         #3, h, w
         input_tensor, county_mappings = dataset[i]
-        model_input = tf.expand_dims(tf.transpose(input_tensor, perm=[1, 2, 0]), axis=0)
+        model_input = tf.expand_dims(input_tensor, axis=0)
 
-        output_map = inference_model(model_input, training=False)
-        pct_map = tf.keras.activations.softmax(output_map, axis=-1)
+        output_map = model(model_input, training=False)
+        pct_map = tf.keras.activations.softmax(output_map, axis=1)
 
-        # h, w, 3
+        #3, h, w
         pct_map = tf.squeeze(pct_map, axis=0)
         
         for mapping in county_mappings:
@@ -123,8 +110,8 @@ def test_model(model):
             x = mapping['grid_x']
             y = mapping['grid_y']
 
-            r_pct = float(pct_map[y, x, 0]) * 100
-            d_pct = float(pct_map[y, x, 1]) * 100
+            r_pct = float(pct_map[0, y, x]) * 100
+            d_pct = float(pct_map[1, y, x]) * 100
 
             if spatial_key in ledger:
                 for array_id, row_id, original_id in ledger[spatial_key]:
@@ -595,25 +582,19 @@ normalizer = StandardScaler()
 model = None
 
 
-def main():
-    global model
-    keep_running = True
-    print("- Jerry Mandarin -")
-    while keep_running:
-        train = input("\nWould you like to train a new model? [Y/N]\n")
+keep_running = True
+print("- Jerry Mandarin -")
+while keep_running:
+    train = input("\nWould you like to train a new model? [Y/N]\n")
 
-        if train.upper() == 'Y':
-            model = create_fcn()
-            train_model(model)
+    if train.upper() == 'Y':
+        model = create_fcn()
+        train_model(model)
+    
+    testing = input("\nWould you like to run a trained model? [Y/N]\n")
+    if testing.upper() == 'Y':
+        test_model(model)
 
-        testing = input("\nWould you like to run a trained model? [Y/N]\n")
-        if testing.upper() == 'Y':
-            test_model(model)
-
-        quit = input("Would you like to quit? [Y/N]\n")
-        if quit.upper() == 'Y':
-            keep_running = False
-
-
-if __name__ == "__main__":
-    main()
+    quit = input("Would you like to quit? [Y/N]\n")
+    if quit.upper() == 'Y':
+        keep_running = False
