@@ -124,7 +124,7 @@ def save_map(
         output_file,
         dpi=300,
         bbox_inches="tight",
-        transparent=True
+        transparent=False
     )
 
     plt.close()
@@ -193,7 +193,7 @@ def process_state(
 
     save_map(
         margin_grid,
-        f"{state_name} Republican Margin",
+        f"{state_name} Margin",
         os.path.join(
             output_dir,
             f"{state_name}_margin.png"
@@ -255,7 +255,7 @@ def main():
     )
 
     data_folder = input(
-        "Folder containing original state CSV files:\n"
+        "Folder containing original state CSV training files:\n"
     ).strip()
 
     prediction_file = input(
