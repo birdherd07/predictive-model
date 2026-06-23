@@ -319,9 +319,9 @@ class CountyDataset(Dataset):
                 x = mapping["grid_x"]
                 y = mapping["grid_y"]
 
-                labels_grid[0, y, x] = rawdata[i][5]
-                labels_grid[1, y, x] = rawdata[i][6]
-                labels_grid[2, y, x] = 1.0 - (rawdata[i][6] + rawdata[i][5])
+                labels_grid[0, y, x] = rawdata[i][4]
+                labels_grid[1, y, x] = rawdata[i][5]
+                labels_grid[2, y, x] = 1.0 - (rawdata[i][5] + rawdata[i][4])
 
             target_tensor = torch.from_numpy(labels_grid)
 
@@ -375,9 +375,9 @@ def pre_aggregate_data(list_of_arrays, training=False, precision=3):
             lat       = row[2]
             pop       = row[3]
             if training:
-                votes     = row[4]
-                pct_a     = row[5]
-                pct_b     = row[6]
+                votes     = row[4] + row[5]
+                pct_a     = row[4]
+                pct_b     = row[5]
             
             # Create a unique string key by rounding coordinates
             rounded_lon = round(lon, precision)
