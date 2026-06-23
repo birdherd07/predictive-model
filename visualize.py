@@ -178,10 +178,7 @@ def process_state(
         - merged["d_pct"]
     )
 
-    # ----------------------------------
     # Margin map
-    # ----------------------------------
-
     margin_grid = create_geographic_map(
         merged,
         "margin"
@@ -204,10 +201,7 @@ def process_state(
         colorbar_label="R% - D%"
     )
 
-    # ----------------------------------
     # Republican map
-    # ----------------------------------
-
     republican_grid = create_geographic_map(
         merged,
         "r_pct"
@@ -226,10 +220,7 @@ def process_state(
         colorbar_label="Republican %"
     )
 
-    # ----------------------------------
     # Democrat map
-    # ----------------------------------
-
     democrat_grid = create_geographic_map(
         merged,
         "d_pct"
