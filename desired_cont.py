@@ -15,9 +15,12 @@ from pathlib import Path
 import sys
 
 import numpy as np
-from scipy.spatial import cKDTree
 
-from Desired_districts import prompt_party_counts
+try:
+    from scipy.spatial import cKDTree
+except ModuleNotFoundError:
+    cKDTree = None
+
 from districts import STATE_INFO, read_data
 
 
@@ -26,6 +29,40 @@ OUTPUT_COLUMNS = [
     "population", "state_fips", "state", "district", "district_target_party",
     "district_winner",
 ]
+
+
+def prompt_integer(prompt: str, minimum: int, maximum: int) -> int:
+    while True:
+        raw_value = input(prompt).strip()
+        try:
+            value = int(raw_value)
+        except ValueError:
+            print(f"Please enter a whole number from {minimum} to {maximum}.")
+            continue
+        if minimum <= value <= maximum:
+            return value
+        print(f"Please enter a whole number from {minimum} to {maximum}.")
+
+
+def prompt_party_counts(state_name: str, district_count: int) -> tuple[int, int]:
+    print(f"\n{state_name} has {district_count} district(s).")
+    while True:
+        republican = prompt_integer(
+            f"How many Republican districts do you want in {state_name}? ",
+            0,
+            district_count,
+        )
+        democratic = prompt_integer(
+            f"How many Democratic districts do you want in {state_name}? ",
+            0,
+            district_count,
+        )
+        if republican + democratic == district_count:
+            return republican, democratic
+        print(
+            f"Those add up to {republican + democratic}, but {state_name} needs "
+            f"exactly {district_count} districts. Try again."
+        )
 
 
 def training_files_by_state(folder: Path) -> dict[str, Path]:
@@ -104,17 +141,70 @@ def graph_components(adjacency: list[set[int]]) -> list[np.ndarray]:
     return components
 
 
+def nearest_neighbors(points: np.ndarray, neighbors: int) -> np.ndarray:
+    count = len(points)
+    neighbor_count = min(neighbors, count - 1)
+    if neighbor_count < 1:
+        return np.empty((count, 0), dtype=int)
+    if cKDTree is not None:
+        _, nearest = cKDTree(points).query(points, k=neighbor_count + 1)
+        if nearest.ndim == 1:
+            nearest = nearest[:, None]
+        return np.asarray(nearest[:, 1:], dtype=int)
+
+    indexes = np.empty((count, neighbor_count), dtype=int)
+    chunk_size = max(1, min(count, 4_000_000 // max(count, 1)))
+    for start in range(0, count, chunk_size):
+        end = min(start + chunk_size, count)
+        distances = np.sum((points[start:end, None, :] - points[None, :, :]) ** 2, axis=2)
+        distances[np.arange(end - start), np.arange(start, end)] = np.inf
+        partitioned = np.argpartition(distances, kth=neighbor_count - 1, axis=1)[:, :neighbor_count]
+        indexes[start:end] = np.take_along_axis(
+            partitioned,
+            np.argsort(np.take_along_axis(distances, partitioned, axis=1), axis=1),
+            axis=1,
+        )
+    return indexes
+
+
+def closest_between(points: np.ndarray, left_indexes: np.ndarray, right_indexes: np.ndarray) -> tuple[float, int, int]:
+    if cKDTree is not None:
+        distances, indexes = cKDTree(points[right_indexes]).query(points[left_indexes], k=1)
+        position = int(np.argmin(distances))
+        return (
+            float(distances[position]),
+            int(left_indexes[position]),
+            int(right_indexes[int(indexes[position])]),
+        )
+
+    best = (float("inf"), int(left_indexes[0]), int(right_indexes[0]))
+    chunk_size = max(1, min(len(left_indexes), 4_000_000 // max(len(right_indexes), 1)))
+    for start in range(0, len(left_indexes), chunk_size):
+        end = min(start + chunk_size, len(left_indexes))
+        distances = np.sum(
+            (points[left_indexes[start:end], None, :] - points[right_indexes][None, :, :]) ** 2,
+            axis=2,
+        )
+        flat_position = int(np.argmin(distances))
+        row, column = np.unravel_index(flat_position, distances.shape)
+        candidate = (
+            float(np.sqrt(distances[row, column])),
+            int(left_indexes[start + row]),
+            int(right_indexes[column]),
+        )
+        if candidate < best:
+            best = candidate
+    return best
+
+
 def build_adjacency(points: np.ndarray, neighbors: int = 6) -> list[set[int]]:
     count = len(points)
     adjacency = [set() for _ in range(count)]
     if count == 1:
         return adjacency
-    tree = cKDTree(points)
-    _, nearest = tree.query(points, k=min(neighbors + 1, count))
-    if nearest.ndim == 1:
-        nearest = nearest[:, None]
+    nearest = nearest_neighbors(points, neighbors)
     for left, row in enumerate(nearest):
-        for right in np.atleast_1d(row)[1:]:
+        for right in np.atleast_1d(row):
             right = int(right)
             if right != left:
                 adjacency[left].add(right)
@@ -125,14 +215,11 @@ def build_adjacency(points: np.ndarray, neighbors: int = 6) -> list[set[int]]:
     components = graph_components(adjacency)
     while len(components) > 1:
         largest = max(components, key=len)
-        largest_tree = cKDTree(points[largest])
         best = None
         for component in components:
             if component is largest:
                 continue
-            distances, indexes = largest_tree.query(points[component], k=1)
-            position = int(np.argmin(distances))
-            candidate = (float(distances[position]), int(component[position]), int(largest[int(indexes[position])]))
+            candidate = closest_between(points, component, largest)
             if best is None or candidate < best:
                 best = candidate
         _, left, right = best
