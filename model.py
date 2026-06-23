@@ -27,9 +27,6 @@ def normalize_training_list(trainingListData, populationCol: int, normalizer: St
     #Transform each frame using the aggregated values
     for trainingData in trainingListData:
         trainingData[:, [populationCol]] = normalizer.transform(trainingData[:, [populationCol]])  
-        #turn percentages into decimals for better training
-        trainingData[:, 5] *= .01
-        trainingData[:, 6] *= .01
     #print(f"{normalizer.mean_}, {normalizer.scale_}")
 
 #Use the normalizer from training to scale the population column of test data.
@@ -149,7 +146,7 @@ def test_model(model):
 
 
 #Create a fully convolutional model. third channel is the remainder of 100 - (r% + d%) for softmax
-def create_fcn(input_channels=2, classes=3):
+def create_fcn(input_channels=2, classes=2):
     print("Creating a new model...")
 
     #fully convolutional network: output for each block in the map.
@@ -325,17 +322,32 @@ class CountyDataset(Dataset):
             })
 
         if self.training:
-            #Make matching training label grid
             h, w = grid_height, grid_width
-            labels_grid = np.zeros((3, h, w), dtype=np.float32)
+
+            # Two channels:
+            # 0 = Republican share
+            # 1 = Democrat share
+            labels_grid = np.zeros((2, h, w), dtype=np.float32)
 
             for i, mapping in enumerate(county_mappings):
                 x = mapping["grid_x"]
                 y = mapping["grid_y"]
 
-                labels_grid[0, y, x] = rawdata[i][5]
-                labels_grid[1, y, x] = rawdata[i][6]
-                labels_grid[2, y, x] = 1.0 - (rawdata[i][6] + rawdata[i][5])
+                trump_votes = float(rawdata[i][4])
+                biden_votes = float(rawdata[i][5])
+
+                total_votes = trump_votes + biden_votes
+
+                if total_votes > 0:
+                    r_share = trump_votes / total_votes
+                    d_share = biden_votes / total_votes
+                else:
+                    # no votes recorded
+                    r_share = 0.5
+                    d_share = 0.5
+
+                labels_grid[0, y, x] = r_share
+                labels_grid[1, y, x] = d_share
 
             target_tensor = torch.from_numpy(labels_grid)
 
