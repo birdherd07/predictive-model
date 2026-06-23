@@ -95,7 +95,7 @@ def save_map(
     vmax=None,
     colorbar_label=""
 ):
-    plt.figure(figsize=(10, 8))
+    plt.figure(figsize=(10, 8), facecolor='black')
 
     cmap = plt.get_cmap(cmap_name).copy()
 
@@ -111,10 +111,11 @@ def save_map(
         vmax=vmax
     )
 
-    plt.title(title)
+    plt.title(title, color='white')
 
     cbar = plt.colorbar(img)
-    cbar.set_label(colorbar_label)
+    cbar.set_label(colorbar_label, color='white')
+    cbar.ax.tick_params(colors='white')
 
     plt.axis("off")
 
