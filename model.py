@@ -588,13 +588,15 @@ while keep_running:
     train = input("\nWould you like to train a new model? [Y/N]\n")
 
     if train.upper() == 'Y':
-        model = create_fcn()
-        train_model(model)
-    
+            model = create_fcn()
+            train_model(model)
+        
     testing = input("\nWould you like to run a trained model? [Y/N]\n")
     if testing.upper() == 'Y':
-        test_model(model)
+            test_model(model)
 
     quit = input("Would you like to quit? [Y/N]\n")
     if quit.upper() == 'Y':
-        keep_running = False
+            keep_running = False
+
+
