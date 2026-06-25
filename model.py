@@ -25,9 +25,6 @@ def normalize_training_list(trainingListData, populationCol: int, normalizer: St
     #Transform each frame using the aggregated values
     for trainingData in trainingListData:
         trainingData[:, [populationCol]] = normalizer.transform(trainingData[:, [populationCol]])  
-        #turn percentages into decimals for better training
-        trainingData[:, 5] *= .01
-        trainingData[:, 6] *= .01
 
 #Use the normalizer from training to scale the population column of test data.
 def normalize_testing_list(testListData, populationCol: int, normalizer: StandardScaler):
@@ -110,6 +107,7 @@ def test_model(model):
             x = mapping['grid_x']
             y = mapping['grid_y']
 
+            #Turn into percents: remove these to output as decimal
             r_pct = float(pct_map[0, y, x]) * 100
             d_pct = float(pct_map[1, y, x]) * 100
 
@@ -279,19 +277,10 @@ class CountyDataset(Dataset):
         #Channel 0: population. Channel 1: presence/absence of a county
         grid = np.zeros((2, grid_height, grid_width), dtype=np.float32)
 
-        occupied_pixels = set()
-        clash_count = 0
-
         for row in rawdata:
             # Map to [0, width-1] and [0, height-1]
             x = int(np.round(((row[1] - lon_min) / (lon_max - lon_min)) * (grid_width - 1)))
             y = int(np.round(((row[2] - lat_min) / (lat_max - lat_min)) * (grid_height - 1)))
-
-            pxcoord = (y, x)
-            if pxcoord in occupied_pixels:
-                clash_count += 1
-            else:
-                occupied_pixels.add(pxcoord)
 
             #Make north at top of grid
             invert_y = (grid_height - 1) - y
@@ -319,9 +308,9 @@ class CountyDataset(Dataset):
                 x = mapping["grid_x"]
                 y = mapping["grid_y"]
 
-                labels_grid[0, y, x] = rawdata[i][4]
-                labels_grid[1, y, x] = rawdata[i][5]
-                labels_grid[2, y, x] = 1.0 - (rawdata[i][5] + rawdata[i][4])
+                labels_grid[0, y, x] = rawdata[i][5]
+                labels_grid[1, y, x] = rawdata[i][6]
+                labels_grid[2, y, x] = 1.0 - (rawdata[i][5] + rawdata[i][6])
 
             target_tensor = torch.from_numpy(labels_grid)
 
@@ -375,9 +364,9 @@ def pre_aggregate_data(list_of_arrays, training=False, precision=3):
             lat       = row[2]
             pop       = row[3]
             if training:
-                votes     = row[4] + row[5]
-                pct_a     = row[4]
-                pct_b     = row[5]
+                votes     = row[4]
+                pct_a     = row[5]
+                pct_b     = row[6]
             
             # Create a unique string key by rounding coordinates
             rounded_lon = round(lon, precision)
