@@ -517,7 +517,7 @@ def train_model(model):
     print("Starting training...")
 
     epochs = 7
-    optimizer = keras.optimizers.Adam(learning_rate=.0001)
+    optimizer = keras.optimizers.Adam(learning_rate=.02)
 
     for epoch in range(epochs):
         epoch_loss = 0.0
