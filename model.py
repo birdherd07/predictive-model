@@ -141,7 +141,7 @@ def create_fcn(input_channels=2, classes=3):
     x = layers.Activation('relu')(x)
     
     # convolutional block 3
-    x = layers.Conv2D(64, kernel_size=5, padding='same', data_format='channels_first')(x)
+    x = layers.Conv2D(64, kernel_size=3, padding='same', data_format='channels_first')(x)
     #x = layers.BatchNormalization(axis=1)(x)
     x = layers.Activation('relu')(x)
     
@@ -516,7 +516,7 @@ def train_model(model):
 
     print("Starting training...")
 
-    epochs = 7
+    epochs = 10
     optimizer = keras.optimizers.Adam(learning_rate=.02)
 
     for epoch in range(epochs):
